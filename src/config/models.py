@@ -1,10 +1,17 @@
 from collections import OrderedDict
-from typing import Dict, List, Type
+from typing import Dict, List, Type, Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
+from src.config.nat_pn.scaler import EvidenceScaler
+from src.config.flows.utils_flow import initialize_radial_flow
+from pyro.distributions.transforms import ComposeTransform
+import src.config.nat_pn.distributions as D
+from src.config.nat_pn.distributions import Posterior
+from src.config.flows.utils_flow import process_flow_batch
+from src.config.nat_pn.output.categorical import CategoricalOutput
 
 
 class DecoupledModel(nn.Module):
@@ -14,6 +21,7 @@ class DecoupledModel(nn.Module):
         self.all_features = []
         self.base: nn.Module = None
         self.classifier: nn.Module = None
+        self.flow: Optional[ComposeTransform] = None
         self.dropout: List[nn.Module] = []
 
     def need_all_features(self):
@@ -195,7 +203,8 @@ class TwoNN(DecoupledModel):
         return func(x)
 
     def get_all_features(self, x, detach=True):
-        raise RuntimeError("2NN has 0 Conv layer, so is unable to get all features.")
+        raise RuntimeError(
+            "2NN has 0 Conv layer, so is unable to get all features.")
 
 
 class MobileNetV2(DecoupledModel):
@@ -291,6 +300,111 @@ class AlexNet(DecoupledModel):
         self.base.classifier[-1] = nn.Identity()
 
 
+class NatPnModel(DecoupledModel):
+    def __init__(self, dataset):
+        super(NatPnModel, self).__init__()
+        # config = {
+        #     "mnist": 10,
+        #     "medmnistS": 11,
+        #     "medmnistC": 11,
+        #     "medmnistA": 11,
+        #     "fmnist": 10,
+        #     "svhn": 10,
+        #     "emnist": 62,
+        #     "femnist": 62,
+        #     "cifar10": 10,
+        #     "cinic10": 10,
+        #     "cifar100": 100,
+        #     "covid19": 4,
+        #     "usps": 10,
+        #     "celeba": 2,
+        #     "tiny_imagenet": 200,
+        # }
+
+        # pretrained = True
+        # self.base = models.resnet18(
+        #     weights=models.ResNet18_Weights.DEFAULT if pretrained else None
+        # )
+        # self.classifier = CategoricalOutput(self.base.fc.in_features, config[dataset])
+
+        config = {
+            "mnist": (1, 1024, 10),
+            "medmnistS": (1, 1024, 11),
+            "medmnistC": (1, 1024, 11),
+            "medmnistA": (1, 1024, 11),
+            "covid19": (3, 196736, 4),
+            "fmnist": (1, 1024, 10),
+            "emnist": (1, 1024, 62),
+            "femnist": (1, 1, 62),
+            "cifar10": (3, 1600, 10),
+            "cinic10": (3, 1600, 10),
+            "cifar100": (3, 1600, 100),
+            "tiny_imagenet": (3, 3200, 200),
+            "celeba": (3, 133824, 2),
+            "svhn": (3, 1600, 10),
+            "usps": (1, 800, 10),
+        }
+        self.base = nn.Sequential(
+            OrderedDict(
+                conv1=nn.Conv2d(config[dataset][0], 32, 5),
+                activation1=nn.ReLU(),
+                pool1=nn.MaxPool2d(2),
+                conv2=nn.Conv2d(32, 64, 5),
+                activation2=nn.ReLU(),
+                pool2=nn.MaxPool2d(2),
+                flatten=nn.Flatten(),
+                fc1=nn.Linear(config[dataset][1], 512),
+            )
+        )
+        self.classifier = CategoricalOutput(512, config[dataset][2])
+        self.scaler = EvidenceScaler(dim=512, budget="normal")
+        self.flow = initialize_radial_flow(input_dim=512, n_transforms=30)
+        # self.base.fc = nn.Identity()
+
+    def need_all_features(self):
+        return
+
+    def train_forward(self, x: torch.Tensor) -> tuple[Posterior, torch.Tensor, torch.Tensor]:
+
+        if self.base is not None:
+            local_embeddings = self.base(x)
+        else:
+            local_embeddings = x
+
+        log_prob = process_flow_batch(local_flow=self.flow,
+                                       batch_embeddings=local_embeddings)
+        log_evidence = self.scaler.forward(log_prob, True)
+        prediction = self.classifier(local_embeddings)
+        sufficient_statistics = prediction.expected_sufficient_statistics()
+        update = D.PosteriorUpdate(sufficient_statistics=sufficient_statistics,
+                                log_evidence=log_evidence.detach())
+
+        y_pred = self.classifier.prior.update(update)
+
+        return y_pred, log_prob, local_embeddings
+
+    def forward(self, x):
+        if x.shape[1] == 1:
+            x = torch.expand_copy(x, (x.shape[0], 3, *x.shape[2:]))
+        return self.train_forward(x)[0].alpha.log()
+
+    # def forward(self, x: torch.Tensor):
+    #     out = self.classifier(F.relu(self.base(x)))
+    #     if self.need_all_features_flag:
+    #         self.all_features = []
+    #     return out
+
+    def get_all_features(self, x, detach=True):
+        if x.shape[1] == 1:
+            x = torch.expand_copy(x, (x.shape[0], 3, *x.shape[2:]))
+        return super().get_all_features(x, detach)
+
+    def get_final_features(self, x, detach=True):
+        if x.shape[1] == 1:
+            x = torch.expand_copy(x, (x.shape[0], 3, *x.shape[2:]))
+        return super().get_final_features(x, detach)
+
+
 MODEL_DICT: Dict[str, Type[DecoupledModel]] = {
     "lenet5": LeNet5,
     "avgcnn": FedAvgCNN,
@@ -298,4 +412,5 @@ MODEL_DICT: Dict[str, Type[DecoupledModel]] = {
     "mobile": MobileNetV2,
     "res18": ResNet18,
     "alex": AlexNet,
+    "natpn": NatPnModel,
 }

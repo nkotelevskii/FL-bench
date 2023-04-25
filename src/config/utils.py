@@ -7,6 +7,7 @@ import random
 import numpy as np
 from path import Path
 from torch.utils.data import DataLoader
+from src.config.nat_pn.loss import BayesianLoss
 
 _PROJECT_DIR = Path(__file__).parent.parent.parent.abspath()
 OUT_DIR = _PROJECT_DIR / "out"
@@ -71,7 +72,7 @@ def trainable_params(
 def evaluate(
     model: torch.nn.Module,
     dataloader: DataLoader,
-    criterion=torch.nn.CrossEntropyLoss(reduction="sum"),
+    criterion: torch.nn.Module,
     device=torch.device("cpu"),
 ) -> Tuple[float, float, int]:
     model.eval()
@@ -80,8 +81,13 @@ def evaluate(
     sample_num = 0
     for x, y in dataloader:
         x, y = x.to(device), y.to(device)
-        logits = model(x)
-        loss += criterion(logits, y).item()
+        if isinstance(criterion, BayesianLoss):
+            y_pred, log_prob, _ = model.train_forward(x)
+            logits = y_pred.alpha.log()
+            loss += criterion(y_pred, y, log_prob).item()
+        else:
+            logits = model(x)
+            loss += criterion(logits, y).item()
         pred = torch.argmax(logits, -1)
         correct += (pred == y).sum().item()
         sample_num += len(y)

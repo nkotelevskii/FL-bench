@@ -15,6 +15,7 @@ _PROJECT_DIR = Path(__file__).parent.parent.parent.abspath()
 
 from src.config.utils import trainable_params, evaluate
 from src.config.models import DecoupledModel
+from src.config.nat_pn.loss import BayesianLoss
 from data.utils.constants import MEAN, STD
 from data.utils.datasets import DATASETS
 
@@ -58,7 +59,13 @@ class FedAvgClient:
         self.model = model.to(self.device)
         self.local_epoch = self.args.local_epoch
         self.local_lr = self.args.local_lr
-        self.criterion = torch.nn.CrossEntropyLoss().to(self.device)
+        if self.args.loss_name == "bayessian":
+            self.criterion = BayesianLoss(
+                entropy_weight=self.args.loss_entropy_weight,
+                log_prob_weight=self.args.loss_log_prob_weight,
+                                          )
+        else:
+            self.criterion = torch.nn.CrossEntropyLoss().to(self.device)
         self.logger = logger
         self.personal_params_dict: Dict[int, Dict[str, torch.Tensor]] = {}
         self.personal_params_name: List[str] = []
@@ -176,8 +183,12 @@ class FedAvgClient:
                     continue
 
                 x, y = x.to(self.device), y.to(self.device)
-                logit = self.model(x)
-                loss = self.criterion(logit, y)
+                if isinstance(self.criterion, BayesianLoss):
+                    y_pred, log_prob, _ = self.model.train_forward(x)
+                    loss = self.criterion(y_pred, y, log_prob)
+                else:
+                    logit = self.model(x)
+                    loss = self.criterion(logit, y)
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
@@ -189,7 +200,15 @@ class FedAvgClient:
         train_loss, test_loss = 0, 0
         train_correct, test_correct = 0, 0
         train_sample_num, test_sample_num = 0, 0
-        criterion = torch.nn.CrossEntropyLoss(reduction="sum")
+
+        if self.args.loss_name == "bayessian":
+            criterion = BayesianLoss(
+                entropy_weight=self.args.loss_entropy_weight,
+                log_prob_weight=self.args.loss_log_prob_weight,
+                reduction="sum"
+                                          )
+        else:
+            criterion = torch.nn.CrossEntropyLoss(reduction="sum").to(self.device)
 
         if len(self.testset) > 0 and self.args.eval_test:
             test_loss, test_correct, test_sample_num = evaluate(

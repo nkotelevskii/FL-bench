@@ -8,8 +8,8 @@ def get_fedavg_argparser() -> ArgumentParser:
         "-m",
         "--model",
         type=str,
-        default="lenet5",
-        choices=["lenet5", "2nn", "avgcnn", "mobile", "res18", "alex"],
+        default="avgcnn", # lenet5
+        choices=["lenet5", "2nn", "avgcnn", "mobile", "res18", "alex", "natpn"],
     )
     parser.add_argument(
         "-d",
@@ -33,9 +33,13 @@ def get_fedavg_argparser() -> ArgumentParser:
             "tiny_imagenet",
             "cinic10",
         ],
-        default="cifar10",
+        default="mnist",
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--loss_name", type=str, choices=["bayessian", "ce"], default="ce")
+    parser.add_argument("--loss_entropy_weight", type=float, default=0.0)
+    parser.add_argument("--loss_log_prob_weight", type=float, default=0.0)
+
     parser.add_argument("-jr", "--join_ratio", type=float, default=0.1)
     parser.add_argument("-ge", "--global_epoch", type=int, default=100)
     parser.add_argument("-le", "--local_epoch", type=int, default=5)
@@ -50,7 +54,7 @@ def get_fedavg_argparser() -> ArgumentParser:
     parser.add_argument("-bs", "--batch_size", type=int, default=32)
     parser.add_argument("--server_cuda", type=int, default=1)
     parser.add_argument("--client_cuda", type=int, default=1)
-    parser.add_argument("--visible", type=int, default=1)
+    parser.add_argument("--visible", type=int, default=1) # 1 - default!!!!
     parser.add_argument("--save_log", type=int, default=1)
     parser.add_argument("--save_model", type=int, default=0)
     parser.add_argument("--save_fig", type=int, default=1)
