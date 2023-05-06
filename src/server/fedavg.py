@@ -7,6 +7,8 @@ from argparse import Namespace
 from collections import OrderedDict
 from copy import deepcopy
 from typing import Dict, List
+from tqdm.auto import tqdm
+import numpy as np
 
 import torch
 from path import Path
@@ -17,10 +19,11 @@ _PROJECT_DIR = Path(__file__).parent.parent.parent.abspath()
 
 sys.path.append(_PROJECT_DIR)
 
-from src.config.utils import OUT_DIR, fix_random_seed, trainable_params
+from src.config.utils import OUT_DIR, fix_random_seed, trainable_params, reset_flow_and_classifier_params
 from src.config.models import MODEL_DICT
 from src.config.args import get_fedavg_argparser
 from src.client.fedavg import FedAvgClient
+from src.config.utils import evaluate_accuracy, evaluate_only_classifier
 
 
 class FedAvgServer:
@@ -56,7 +59,7 @@ class FedAvgServer:
         self.device = torch.device(
             "cuda" if self.args.server_cuda and torch.cuda.is_available() else "cpu"
         )
-        self.model = MODEL_DICT[self.args.model](self.args.dataset).to(self.device)
+        self.reinitialize_model()
         self.model.check_avaliability()
         self.trainable_params_name, init_trainable_params = trainable_params(
             self.model, requires_name=True
@@ -75,7 +78,8 @@ class FedAvgServer:
         # Some algorithms' implicit operations at client side may disturb the stream if sampling happens at each FL round's beginning.
         self.client_sample_stream = [
             random.sample(
-                self.train_clients, int(self.client_num_in_total * self.args.join_ratio)
+                self.train_clients, int(
+                    self.client_num_in_total * self.args.join_ratio)
             )
             for _ in range(self.args.global_epoch)
         ]
@@ -100,7 +104,8 @@ class FedAvgServer:
             "test_before": [],
             "test_after": [],
         }
-        self.logger = Console(record=self.args.save_log, log_path=False, log_time=False)
+        self.logger = Console(record=self.args.save_log,
+                              log_path=False, log_time=False)
         self.test_results: Dict[int, Dict[str, str]] = {}
         self.train_progress_bar = track(
             range(self.args.global_epoch), "[bold green]Training..."
@@ -112,7 +117,25 @@ class FedAvgServer:
         # init trainer
         self.trainer = None
         if default_trainer:
-            self.trainer = FedAvgClient(deepcopy(self.model), self.args, self.logger)
+            self.trainer = FedAvgClient(
+                deepcopy(self.model), self.args, self.logger)
+
+    def reinitialize_model(self,):
+        if self.args.model == "natpn":
+            if self.args.dataset == "toy_noisy":
+                dataset = self.args.dataset + f"_{self.args.dataset_args['toy_noisy_classes']}"
+            else:
+                dataset = self.args.dataset
+            self.dataset_name = dataset
+
+            self.model = MODEL_DICT[self.args.model](self.dataset_name,
+                                                    self.args.nat_pn_backbone,
+                                                    self.args.stop_grad_logp,
+                                                    self.args.stop_grad_embeddings,
+                                                    ).to(self.device)
+        else:
+            self.model = MODEL_DICT[self.args.model](
+                self.args.dataset).to(self.device)
 
     def train(self):
         for E in self.train_progress_bar:
@@ -142,7 +165,38 @@ class FedAvgServer:
                 weight_cache.append(weight)
 
             self.aggregate(delta_cache, weight_cache)
-            self.log_info()
+
+            # ####
+            # mean_global_accuracy = []
+            # mean_only_classifier = []
+            # mean_log_prob = []
+            # for i in range(self.client_num_in_total):
+            #     self.trainer.client_id = i
+            #     self.trainer.load_dataset()
+            #     self.trainer.set_parameters(self.global_params_dict)
+            #     eval_model = deepcopy(self.trainer.model)
+            #     eval_model.eval()
+
+            #     accuracy, log_prob = evaluate_accuracy(
+            #         model=eval_model,
+            #         dataloader=self.trainer.testloader,
+            #         device=self.device,
+            #     )
+            #     correct, n_samples = evaluate_only_classifier(
+            #         model=eval_model,
+            #         dataloader=self.trainer.testloader,
+            #         device=self.device,
+            #     )
+            #     mean_only_classifier.append(correct.sum() / n_samples)
+            #     mean_global_accuracy.append(accuracy)
+            #     mean_log_prob.append(log_prob)
+            # print(f'Global {np.mean(mean_global_accuracy)}')
+            # print(f'Only classifier {np.mean(mean_only_classifier)}')
+            # print(f'Logprob {np.mean(mean_log_prob)}')
+            # # ####
+            
+            # self.log_info()
+            # self.trainer.scheduler.step()
 
     def test(self):
         loss_before, loss_after = [], []
@@ -190,7 +244,8 @@ class FedAvgServer:
     def generate_client_params(self, client_id: int) -> OrderedDict[str, torch.Tensor]:
         if self.unique_model:
             return OrderedDict(
-                zip(self.trainable_params_name, self.client_trainable_params[client_id])
+                zip(self.trainable_params_name,
+                    self.client_trainable_params[client_id])
             )
         else:
             return self.global_params_dict
@@ -211,7 +266,8 @@ class FedAvgServer:
         for label, metric in self.metrics.items():
             if len(metric) > 0:
                 self.logger.log(f"Convergence ({label}):")
-                acc_range = [90.0, 80.0, 70.0, 60.0, 50.0, 40.0, 30.0, 20.0, 10.0]
+                acc_range = [90.0, 80.0, 70.0, 60.0,
+                             50.0, 40.0, 30.0, 20.0, 10.0]
                 min_acc_idx = 10
                 max_acc = 0
                 for E, acc in enumerate(metric):
@@ -261,10 +317,12 @@ class FedAvgServer:
                 )
 
                 acc_before = (
-                    correct_before.sum(dim=-1, keepdim=True) / num_samples.sum() * 100.0
+                    correct_before.sum(dim=-1, keepdim=True) /
+                    num_samples.sum() * 100.0
                 ).item()
                 acc_after = (
-                    correct_after.sum(dim=-1, keepdim=True) / num_samples.sum() * 100.0
+                    correct_after.sum(dim=-1, keepdim=True) /
+                    num_samples.sum() * 100.0
                 ).item()
                 self.metrics[f"{label}_before"].append(acc_before)
                 self.metrics[f"{label}_after"].append(acc_after)
@@ -314,7 +372,8 @@ class FedAvgServer:
             os.makedirs(OUT_DIR / self.algo, exist_ok=True)
 
         if self.args.save_log:
-            self.logger.save_text(OUT_DIR / self.algo / f"{self.args.dataset}_log.html")
+            self.logger.save_text(OUT_DIR / self.algo /
+                                  f"{self.args.dataset}_log.html")
 
         if self.args.save_fig:
             import matplotlib
@@ -362,7 +421,41 @@ class FedAvgServer:
                     self.client_trainable_params, OUT_DIR / self.algo / model_name
                 )
             else:
-                torch.save(self.model.state_dict(), OUT_DIR / self.algo / model_name)
+                if self.args.model != "natpn":
+                    torch.save(self.global_params_dict,
+                               OUT_DIR / self.algo / model_name)
+                # torch.save(self.model.state_dict(), OUT_DIR / self.algo / model_name)
+
+            self.post_training_and_save(model_name)
+
+    def post_training_and_save(self, model_name,):
+        all_models_dict: dict[str | int, torch.nn.ParameterDict] = {}
+
+        self.trainer.set_parameters(self.global_params_dict)
+        global_model = self.trainer.model
+        all_models_dict["global"] = deepcopy(global_model.state_dict(keep_vars=True))
+
+        if self.args.finetune_in_the_end > 0:
+            self.trainer.local_epoch = self.args.finetune_in_the_end
+            for client_id in tqdm(range(self.client_num_in_total)):
+                client_local_params = self.generate_client_params(client_id)
+                client_local_params = reset_flow_and_classifier_params(client_local_params)
+                new_params, _, _ = self.trainer.train(
+                    client_id=client_id,
+                    new_parameters=client_local_params,
+                    return_diff=False,
+                    verbose=False,
+                    train_base_model=False,
+                )
+                all_models_dict[client_id] = deepcopy(self.trainer.model.state_dict(keep_vars=True))
+        text_stopgrad_logp = "_stopgrad_logp" if self.args.stop_grad_logp else ""
+        text_stopgrad_embeddings = "_stopgrad_embeddings" if self.args.stop_grad_embeddings else ""
+        if self.args.dataset == 'toy_noisy':
+            torch.save(all_models_dict, OUT_DIR / self.algo /
+                   f"all_params_{self.args.dataset_args['toy_noisy_classes']}{text_stopgrad_logp}{text_stopgrad_embeddings}_{self.args.seed}_{model_name}")
+        else:
+            torch.save(all_models_dict, OUT_DIR / self.algo /
+                    f"all_params{text_stopgrad_logp}{text_stopgrad_embeddings}_{model_name}")
 
 
 if __name__ == "__main__":

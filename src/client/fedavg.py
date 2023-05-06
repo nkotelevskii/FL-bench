@@ -7,7 +7,9 @@ from typing import Dict, List, Tuple
 import torch
 from path import Path
 from rich.console import Console
-from torch.optim import SGD
+import numpy as np
+from torch.optim import SGD, Adam
+from torch.optim.lr_scheduler import MultiStepLR
 from torch.utils.data import DataLoader, Subset
 from torchvision.transforms import Compose, Normalize
 
@@ -15,7 +17,7 @@ _PROJECT_DIR = Path(__file__).parent.parent.parent.abspath()
 
 from src.config.utils import trainable_params, evaluate
 from src.config.models import DecoupledModel
-from src.config.nat_pn.loss import BayesianLoss
+from src.config.nat_pn.loss import BayesianLoss, LogMarginalLoss
 from data.utils.constants import MEAN, STD
 from data.utils.datasets import DATASETS
 
@@ -55,7 +57,6 @@ class FedAvgClient:
         self.testloader: DataLoader = None
         self.trainset: Subset = Subset(self.dataset, indices=[])
         self.testset: Subset = Subset(self.dataset, indices=[])
-
         self.model = model.to(self.device)
         self.local_epoch = self.args.local_epoch
         self.local_lr = self.args.local_lr
@@ -64,6 +65,11 @@ class FedAvgClient:
                 entropy_weight=self.args.loss_entropy_weight,
                 log_prob_weight=self.args.loss_log_prob_weight,
                                           )
+        elif self.args.loss_name == "marginal_ll":
+            self.criterion = LogMarginalLoss(
+                entropy_weight=self.args.loss_entropy_weight,
+                log_prob_weight=self.args.loss_log_prob_weight,
+            )
         else:
             self.criterion = torch.nn.CrossEntropyLoss().to(self.device)
         self.logger = logger
@@ -74,13 +80,19 @@ class FedAvgClient:
             for key, param in self.model.state_dict(keep_vars=True).items()
             if not param.requires_grad
         }
+        self.reset_optimizers()
+        
+
+    def reset_optimizers(self, ):
         self.opt_state_dict = {}
-        self.optimizer = SGD(
+        self.optimizer = Adam(
             trainable_params(self.model),
             self.local_lr,
-            self.args.momentum,
-            self.args.weight_decay,
+            # self.args.momentum,
+            # self.args.weight_decay,
         )
+        # self.scheduler = MultiStepLR(optimizer=self.optimizer,
+        #                               milestones=np.linspace(0, self.args.global_epoch, 5), gamma=0.5)
 
     def load_dataset(self):
         self.trainset.indices = self.data_indices[self.client_id]["train"]
@@ -152,10 +164,14 @@ class FedAvgClient:
         new_parameters: OrderedDict[str, torch.nn.Parameter],
         return_diff=True,
         verbose=False,
+        train_base_model=True,
     ) -> Tuple[List[torch.nn.Parameter], int, Dict]:
         self.client_id = client_id
         self.load_dataset()
         self.set_parameters(new_parameters)
+        if not train_base_model:
+            for p in self.model.base.parameters():
+                p.requires_grad_(False)
         eval_stats = self.train_and_log(verbose=verbose)
 
         if return_diff:
@@ -183,9 +199,10 @@ class FedAvgClient:
                     continue
 
                 x, y = x.to(self.device), y.to(self.device)
-                if isinstance(self.criterion, BayesianLoss):
+                if isinstance(self.criterion, BayesianLoss) or isinstance(self.criterion, LogMarginalLoss):
                     y_pred, log_prob, _ = self.model.train_forward(x)
                     loss = self.criterion(y_pred, y, log_prob)
+                    
                 else:
                     logit = self.model(x)
                     loss = self.criterion(logit, y)
@@ -203,6 +220,12 @@ class FedAvgClient:
 
         if self.args.loss_name == "bayessian":
             criterion = BayesianLoss(
+                entropy_weight=self.args.loss_entropy_weight,
+                log_prob_weight=self.args.loss_log_prob_weight,
+                reduction="sum"
+                                          )
+        elif self.args.loss_name == "marginal_ll":
+            criterion = LogMarginalLoss(
                 entropy_weight=self.args.loss_entropy_weight,
                 log_prob_weight=self.args.loss_log_prob_weight,
                 reduction="sum"
@@ -266,8 +289,14 @@ class FedAvgClient:
                     continue
 
                 x, y = x.to(self.device), y.to(self.device)
-                logit = self.model(x)
-                loss = self.criterion(logit, y)
+
+                if isinstance(self.criterion, BayesianLoss):
+                    y_pred, log_prob, _ = self.model.train_forward(x)
+                    loss = self.criterion(y_pred, y, log_prob)
+                else:
+                    logit = self.model(x)
+                    loss = self.criterion(logit, y)
+                
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()

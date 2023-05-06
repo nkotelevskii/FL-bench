@@ -3,11 +3,13 @@ from typing import List
 from argparse import Namespace
 
 import torch
+from tqdm.auto import tqdm
 
 from fedavg import FedAvgServer
 from src.client.scaffold import SCAFFOLDClient
 from src.config.args import get_scaffold_argparser
-from src.config.utils import trainable_params
+from src.config.utils import trainable_params, reset_flow_and_classifier_params
+from src.config.utils import OUT_DIR
 
 
 class SCAFFOLDServer(FedAvgServer):
@@ -78,6 +80,33 @@ class SCAFFOLDServer(FedAvgServer):
         for c_global, c_delta in zip(self.c_global, zip(*c_delta_cache)):
             c_delta = torch.stack(c_delta, dim=-1).sum(dim=-1).to(self.device)
             c_global.data += (1 / self.client_num_in_total) * c_delta.data
+
+    def post_training_and_save(self, model_name):
+        all_models_dict: dict[str | int, torch.nn.ParameterDict] = {}
+        all_models_dict["global"] = deepcopy(self.global_params_dict)
+
+        if self.args.finetune_in_the_end > 0:
+            self.trainer.local_epoch = self.args.finetune_in_the_end
+            for client_id in tqdm(range(self.client_num_in_total)):
+                client_local_params = self.generate_client_params(client_id)
+                client_local_params = reset_flow_and_classifier_params(client_local_params)
+                new_params, _, _ = self.trainer.train(
+                    client_id=client_id,
+                    new_parameters=client_local_params,
+                    c_global=self.c_global,
+                    return_diff=False,
+                    verbose=False,
+                    train_base_model=False,
+                )
+                all_models_dict[client_id] = deepcopy(self.trainer.model.state_dict(keep_vars=True))
+        text_stopgrad_logp = "_stopgrad_logp" if self.args.stop_grad_logp else ""
+        text_stopgrad_embeddings = "_stopgrad_embeddings" if self.args.stop_grad_embeddings else ""
+        if self.args.dataset == 'toy_noisy':
+            torch.save(all_models_dict, OUT_DIR / self.algo /
+                   f"all_params_{self.args.dataset_args['toy_noisy_classes']}{text_stopgrad_logp}{text_stopgrad_embeddings}_{self.args.seed}_{model_name}")
+        else:
+            torch.save(all_models_dict, OUT_DIR / self.algo /
+                    f"all_params{text_stopgrad_logp}{text_stopgrad_embeddings}_{model_name}")
 
 
 if __name__ == "__main__":

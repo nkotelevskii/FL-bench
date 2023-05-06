@@ -10,6 +10,87 @@ from path import Path
 from PIL import Image
 from torchvision.transforms.functional import pil_to_tensor
 from torch.utils.data import Dataset
+import math
+from sklearn.datasets import make_blobs
+
+
+def generate_blob_centers_on_circle(radius: float, n_gaussians: int) -> np.ndarray:
+    """
+    The function generates uniform centers on a circle of a given radius
+    :param radius:
+    :param n_gaussians:
+    :return:
+    """
+    alphas = np.linspace(0., 2 * np.pi, n_gaussians + 1)[1:]
+    centers = []
+    for alpha in alphas:
+        x = radius * math.cos(alpha)
+        y = radius * math.sin(alpha)
+        centers.append([x, y])
+    centers = np.vstack(centers).reshape((-1, 1, 2))
+    return centers
+
+
+def sample_from_gaussians_on_circle(radius: float, n_gaussians: int) -> tuple[np.ndarray, np.ndarray]:
+    centers = generate_blob_centers_on_circle(
+        radius=radius, n_gaussians=n_gaussians)
+    all_samples = []
+    all_labels = []
+    for i in range(n_gaussians):
+        samples = make_blobs(
+            n_samples=2000, centers=centers[i], cluster_std=0.1,)
+        labels = np.ones_like(samples[1]) * i
+
+        all_samples.append(samples[0])
+        all_labels.append(labels)
+    return np.vstack(all_samples), np.hstack(all_labels)
+
+
+def generate_toy_circle(args):
+    data, targets = sample_from_gaussians_on_circle(
+        radius=1.0,
+        n_gaussians=2,
+    )
+
+    os.makedirs(args.dataset, exist_ok=True)
+    with open(f"../{args.dataset}/data.npy", 'wb') as f:
+        np.save(f, data)
+    with open(f"../{args.dataset}/targets.npy", 'wb') as f:
+        np.save(f, targets)
+
+
+def generate_toy_noisy(args):
+
+    all_samples = []
+    all_labels = []
+    centers = np.array([
+        [-1., 0.],
+        [1., 0.],
+        [0., 0.],
+    ], dtype=np.float32)
+    for i, center in enumerate(centers):
+        N = 5000 #if i != 2 else args.toy_noisy_classes * 100
+        print(N)
+        samples = make_blobs(
+            n_samples=N, centers=center.reshape(1, -1), cluster_std=0.1,)
+
+        all_samples.append(samples[0])
+        if i == len(centers) - 1:
+            labels = np.random.randint(
+                low=0, high=args.toy_noisy_classes, size=samples[0].shape[0])
+        else:
+            labels = np.ones_like(samples[1]) * i
+
+        all_labels.append(labels)
+
+    data = np.vstack(all_samples)
+    targets = np.hstack(all_labels)
+
+    os.makedirs(args.dataset, exist_ok=True)
+    with open(f"../{args.dataset}/data_{args.toy_noisy_classes}.npy", 'wb') as f:
+        np.save(f, data)
+    with open(f"../{args.dataset}/targets_{args.toy_noisy_classes}.npy", 'wb') as f:
+        np.save(f, targets)
 
 
 class BaseDataset(Dataset):
@@ -30,6 +111,57 @@ class BaseDataset(Dataset):
 
     def __len__(self):
         return len(self.targets)
+
+
+class ToyCircle(BaseDataset):
+    def __init__(self, root, args=None, transform=None, target_transform=None):
+        super().__init__()
+        if not isinstance(root, Path):
+            root = Path(root)
+
+        if not os.path.isfile(root / "data.npy") or not os.path.isfile(
+            root / "targets.npy"
+        ):
+            generate_toy_circle(args)
+
+        with open(f'{root}/data.npy', 'rb') as f:
+            data = np.load(f)
+        with open(f'{root}/targets.npy', 'rb') as f:
+            targets = np.load(f)
+
+        self.data = torch.from_numpy(data).float()
+        self.targets = torch.from_numpy(targets).long()
+        self.classes = list(range(len(self.targets.unique())))
+        self.transform = None
+        self.target_transform = target_transform
+
+
+class ToyNoisy(BaseDataset):
+    def __init__(self, root, args=None, transform=None, target_transform=None):
+        super().__init__()
+        if not isinstance(root, Path):
+            root = Path(root)
+
+        if hasattr(args, 'toy_noisy_classes'):
+            n_classes = args.toy_noisy_classes
+        else:
+            n_classes = args['toy_noisy_classes']
+
+        if not os.path.isfile(root / f"data_{n_classes}.npy") or not os.path.isfile(
+            root / f"targets_{n_classes}.npy"
+        ):
+            generate_toy_noisy(args)
+
+        with open(f"{root}/data_{n_classes}.npy", 'rb') as f:
+            data = np.load(f)
+        with open(f"{root}/targets_{n_classes}.npy", 'rb') as f:
+            targets = np.load(f)
+
+        self.data = torch.from_numpy(data).float()
+        self.targets = torch.from_numpy(targets).long()
+        self.classes = list(range(len(self.targets.unique())))
+        self.transform = None
+        self.target_transform = target_transform
 
 
 class FEMNIST(BaseDataset):
@@ -104,7 +236,8 @@ class MedMNIST(BaseDataset):
         if not isinstance(root, Path):
             root = Path(root)
         self.data = (
-            torch.Tensor(np.load(root / "raw" / "xdata.npy")).float().unsqueeze(1)
+            torch.Tensor(np.load(root / "raw" / "xdata.npy")
+                         ).float().unsqueeze(1)
         )
         self.targets = (
             torch.Tensor(np.load(root / "raw" / "ydata.npy")).long().squeeze()
@@ -137,8 +270,10 @@ class USPS(BaseDataset):
         super().__init__()
         if not isinstance(root, Path):
             root = Path(root)
-        train_part = torchvision.datasets.USPS(root / "raw", True, download=True)
-        test_part = torchvision.datasets.USPS(root / "raw", False, download=True)
+        train_part = torchvision.datasets.USPS(
+            root / "raw", True, download=True)
+        test_part = torchvision.datasets.USPS(
+            root / "raw", False, download=True)
         train_data = torch.Tensor(train_part.data).float().unsqueeze(1)
         test_data = torch.Tensor(test_part.data).float().unsqueeze(1)
         train_targets = torch.Tensor(train_part.targets).long()
@@ -156,8 +291,10 @@ class SVHN(BaseDataset):
         super().__init__()
         if not isinstance(root, Path):
             root = Path(root)
-        train_part = torchvision.datasets.SVHN(root / "raw", "train", download=True)
-        test_part = torchvision.datasets.SVHN(root / "raw", "test", download=True)
+        train_part = torchvision.datasets.SVHN(
+            root / "raw", "train", download=True)
+        test_part = torchvision.datasets.SVHN(
+            root / "raw", "test", download=True)
         train_data = torch.Tensor(train_part.data).float()
         test_data = torch.Tensor(test_part.data).float()
         train_targets = torch.Tensor(train_part.labels).long()
@@ -176,7 +313,8 @@ class MNIST(BaseDataset):
         train_part = torchvision.datasets.MNIST(
             root, True, transform, target_transform, download=True
         )
-        test_part = torchvision.datasets.MNIST(root, False, transform, target_transform)
+        test_part = torchvision.datasets.MNIST(
+            root, False, transform, target_transform)
         train_data = torch.Tensor(train_part.data).float().unsqueeze(1)
         test_data = torch.Tensor(test_part.data).float().unsqueeze(1)
         train_targets = torch.Tensor(train_part.targets).long().squeeze()
@@ -191,8 +329,10 @@ class MNIST(BaseDataset):
 class FashionMNIST(BaseDataset):
     def __init__(self, root, args=None, transform=None, target_transform=None):
         super().__init__()
-        train_part = torchvision.datasets.FashionMNIST(root, True, download=True)
-        test_part = torchvision.datasets.FashionMNIST(root, False, download=True)
+        train_part = torchvision.datasets.FashionMNIST(
+            root, True, download=True)
+        test_part = torchvision.datasets.FashionMNIST(
+            root, False, download=True)
         train_data = torch.Tensor(train_part.data).float().unsqueeze(1)
         test_data = torch.Tensor(test_part.data).float().unsqueeze(1)
         train_targets = torch.Tensor(train_part.targets).long().squeeze()
@@ -234,7 +374,8 @@ class CIFAR10(BaseDataset):
         super().__init__()
         train_part = torchvision.datasets.CIFAR10(root, True, download=True)
         test_part = torchvision.datasets.CIFAR10(root, False, download=True)
-        train_data = torch.Tensor(train_part.data).permute([0, -1, 1, 2]).float()
+        train_data = torch.Tensor(
+            train_part.data).permute([0, -1, 1, 2]).float()
         test_data = torch.Tensor(test_part.data).permute([0, -1, 1, 2]).float()
         train_targets = torch.Tensor(train_part.targets).long().squeeze()
         test_targets = torch.Tensor(test_part.targets).long().squeeze()
@@ -250,7 +391,8 @@ class CIFAR100(BaseDataset):
         super().__init__()
         train_part = torchvision.datasets.CIFAR100(root, True, download=True)
         test_part = torchvision.datasets.CIFAR100(root, False, download=True)
-        train_data = torch.Tensor(train_part.data).permute([0, -1, 1, 2]).float()
+        train_data = torch.Tensor(
+            train_part.data).permute([0, -1, 1, 2]).float()
         test_data = torch.Tensor(test_part.data).permute([0, -1, 1, 2]).float()
         train_targets = torch.Tensor(train_part.targets).long().squeeze()
         test_targets = torch.Tensor(test_part.targets).long().squeeze()
@@ -321,7 +463,8 @@ class TinyImagenet(BaseDataset):
             for cls in os.listdir(root / "raw" / "train"):
                 for img_name in os.listdir(root / "raw" / "train" / cls / "images"):
                     img = pil_to_tensor(
-                        Image.open(root / "raw" / "train" / cls / "images" / img_name)
+                        Image.open(root / "raw" / "train" /
+                                   cls / "images" / img_name)
                     ).float()
                     if img.shape[0] == 1:
                         img = torch.expand_copy(img, [3, 64, 64])
@@ -344,7 +487,8 @@ class TinyImagenet(BaseDataset):
                 data.append(img)
                 targets.append(mapping[test_classes[img_name]])
             torch.save(torch.stack(data), root / "data.pt")
-            torch.save(torch.tensor(targets, dtype=torch.long), root / "targets.pt")
+            torch.save(torch.tensor(targets, dtype=torch.long),
+                       root / "targets.pt")
 
         self.data = torch.load(root / "data.pt")
         self.targets = torch.load(root / "targets.pt")
@@ -390,7 +534,8 @@ class CINIC10(BaseDataset):
                         data.append(img)
                         targets.append(mapping[cls])
             torch.save(torch.stack(data), root / "data.pt")
-            torch.save(torch.tensor(targets, dtype=torch.long), root / "targets.pt")
+            torch.save(torch.tensor(targets, dtype=torch.long),
+                       root / "targets.pt")
 
         self.data = torch.load(root / "data.pt")
         self.targets = torch.load(root / "targets.pt")
@@ -415,4 +560,6 @@ DATASETS = {
     "usps": USPS,
     "tiny_imagenet": TinyImagenet,
     "cinic10": CINIC10,
+    "toy_circle": ToyCircle,
+    "toy_noisy": ToyNoisy,
 }

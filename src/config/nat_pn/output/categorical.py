@@ -16,7 +16,12 @@ class CategoricalOutput(Output):
             num_classes: The number of categories for the output distribution.
         """
         super().__init__()
-        self.linear = nn.Linear(dim, num_classes)
+        # self.linear = nn.Linear(dim, num_classes)
+        self.linear = nn.Sequential(
+            nn.Linear(dim, 3 * dim),
+            nn.ReLU(),
+            nn.Linear(3 * dim, num_classes),
+            )
         # self.linear = nn.Sequential(*make_list_n_layers(input_dim=dim,
         #                                                 hidden_dim=2 * dim,
         #                                                 n_hidden_layers=2,

@@ -5,6 +5,8 @@ import torch
 
 from fedavg import FedAvgClient
 from src.config.utils import trainable_params
+from src.config.nat_pn.loss import BayesianLoss
+from copy import deepcopy
 
 
 class SCAFFOLDClient(FedAvgClient):
@@ -19,12 +21,22 @@ class SCAFFOLDClient(FedAvgClient):
         client_id: int,
         new_parameters: OrderedDict[str, torch.Tensor],
         c_global: List[torch.Tensor],
+        return_diff=True,
         verbose=False,
+        train_base_model=True,
     ):
         self.client_id = client_id
         self.load_dataset()
         self.iter_trainloader = iter(self.trainloader)
         self.set_parameters(new_parameters)
+        if not train_base_model:
+            skip_params = 0
+            for p in self.model.base.parameters():
+                p.requires_grad_(False)
+                skip_params += 1
+            c_global = c_global[skip_params:]
+            self.c_local[self.client_id] = self.c_local[self.client_id][skip_params:]
+
         self.c_global = c_global
         if self.client_id not in self.c_local.keys():
             self.c_local[self.client_id] = [
@@ -33,6 +45,9 @@ class SCAFFOLDClient(FedAvgClient):
 
         stats = self.train_and_log(verbose=verbose)
 
+        if not return_diff:
+            return deepcopy(trainable_params(self.model)), None, None
+        
         # update local control variate
         with torch.no_grad():
 
@@ -64,10 +79,16 @@ class SCAFFOLDClient(FedAvgClient):
 
     def fit(self):
         self.model.train()
-        for _ in range(self.args.local_epoch):
+        for _ in range(self.local_epoch):
             x, y = self.get_data_batch()
-            logits = self.model(x)
-            loss = self.criterion(logits, y)
+
+            if isinstance(self.criterion, BayesianLoss):
+                y_pred, log_prob, _ = self.model.train_forward(x)
+                loss = self.criterion(y_pred, y, log_prob)
+            else:
+                logit = self.model(x)
+                loss = self.criterion(logit, y)
+
             self.optimizer.zero_grad()
             loss.backward()
             for param, c, c_i in zip(

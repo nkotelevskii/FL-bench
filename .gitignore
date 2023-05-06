@@ -21,7 +21,7 @@ data/svhn
 data/usps
 data/tiny_imagenet
 data/cinic10
-
+notebooks/*.pdf
 # generated files
 out
 *.json

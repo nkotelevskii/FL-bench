@@ -24,6 +24,8 @@ def prune_args(args: Namespace) -> Dict:
         args_dict["emnist_split"] = args.emnist_split
     elif args.dataset == "cifar100":
         args_dict["super_class"] = bool(args.super_class)
+    elif args.dataset == "toy_noisy":
+        args_dict["toy_noisy_classes"] = int(args.toy_noisy_classes)
     elif args.dataset == "synthetic":
         args_dict["beta"] = args.beta
         args_dict["gamma"] = args.gamma
@@ -92,7 +94,8 @@ def process_femnist(args):
         clients_4_test = list(range(client_cnt))
         clients_4_train = list(range(client_cnt))
 
-        num_samples = np.array(list(map(lambda stat_i: stat_i["x"], stats.values())))
+        num_samples = np.array(
+            list(map(lambda stat_i: stat_i["x"], stats.values())))
         stats["sample per client"] = {
             "std": num_samples.mean(),
             "stddev": num_samples.std(),
@@ -228,7 +231,8 @@ def process_celeba(args):
                 "test": list(range(data_cnt + len(train_data), data_cnt + len(data))),
             }
             stats[client_cnt]["x"] = (
-                train["num_samples"][client_cnt] + test["num_samples"][client_cnt]
+                train["num_samples"][client_cnt] +
+                test["num_samples"][client_cnt]
             )
             stats[client_cnt]["y"] = Counter(targets)
 
@@ -237,7 +241,8 @@ def process_celeba(args):
 
         clients_4_train = list(range(client_cnt))
         clients_4_test = list(range(client_cnt))
-        num_samples = np.array(list(map(lambda stat_i: stat_i["x"], stats.values())))
+        num_samples = np.array(
+            list(map(lambda stat_i: stat_i["x"], stats.values())))
         stats["sample per client"] = {
             "std": num_samples.mean(),
             "stddev": num_samples.std(),
@@ -365,9 +370,11 @@ def generate_synthetic_data(args):
 
     for client_id in range(args.client_num_in_total):
         if args.iid:
-            mean_x[client_id] = np.ones(args.dimension) * B[client_id]  # all zeros
+            mean_x[client_id] = np.ones(
+                args.dimension) * B[client_id]  # all zeros
         else:
-            mean_x[client_id] = np.random.normal(B[client_id], 1, args.dimension)
+            mean_x[client_id] = np.random.normal(
+                B[client_id], 1, args.dimension)
 
     if args.iid:
         W_global = np.random.normal(0, 1, (args.dimension, NUM_CLASS))
@@ -425,7 +432,8 @@ def generate_synthetic_data(args):
     np.save(_DATA_ROOT / "synthetic" / "data", np.concatenate(all_data))
     np.save(_DATA_ROOT / "synthetic" / "targets", np.concatenate(all_targets))
 
-    num_samples = np.array(list(map(lambda stat_i: stat_i["x"], stats.values())))
+    num_samples = np.array(
+        list(map(lambda stat_i: stat_i["x"], stats.values())))
     stats["sample per client"] = {
         "std": num_samples.mean(),
         "stddev": num_samples.std(),

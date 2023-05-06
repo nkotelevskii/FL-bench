@@ -40,12 +40,15 @@ class BayesianLoss(nn.Module):
             The loss, processed according to ``self.reduction``.
         """
         nll = -y_pred.expected_log_likelihood(y_true)
+        loss = nll
         if self.log_prob_weight > 0:
             log_prob_component = -self.log_prob_weight * log_prob
-        else:
-            log_prob_component = torch.zeros_like(nll)
-
-        loss = nll - self.entropy_weight * y_pred.entropy() + log_prob_component
+            loss += log_prob_component
+        if self.entropy_weight > 0:
+            entropy_component = -self.entropy_weight * y_pred.entropy()
+            loss += entropy_component
+        # print(f"nll {nll.mean()}")
+        # print(f"log_prob {log_prob.mean()}")
 
         if self.reduction == "mean":
             return loss.mean()
@@ -83,11 +86,13 @@ class LogMarginalLoss(nn.Module):
         a0 = y_pred.alpha.sum(-1)
         a_true = y_pred.alpha.gather(-1, y_true.unsqueeze(-1)).squeeze(-1)
         nll = torch.log(a0) - torch.log(a_true)
+        loss = nll
         if self.log_prob_weight > 0:
             log_prob_component = -self.log_prob_weight * log_prob
-        else:
-            log_prob_component = torch.zeros_like(nll)
-        loss = nll - self.entropy_weight * y_pred.entropy() + log_prob_component
+            loss += log_prob_component
+        if self.entropy_weight > 0:
+            entropy_component = -self.entropy_weight * y_pred.entropy()
+            loss += entropy_component
 
         if self.reduction == "mean":
             return loss.mean()

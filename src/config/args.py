@@ -1,4 +1,15 @@
 from argparse import ArgumentParser
+import argparse
+
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 # Cause the value setting deficit with bool type arguments, all bool type arguments are expressed as int.
 # Non-zero value for True; 0 for False.
@@ -8,9 +19,17 @@ def get_fedavg_argparser() -> ArgumentParser:
         "-m",
         "--model",
         type=str,
-        default="avgcnn", # lenet5
+        default="natpn", # lenet5
         choices=["lenet5", "2nn", "avgcnn", "mobile", "res18", "alex", "natpn"],
     )
+    parser.add_argument(
+        "--nat_pn_backbone",
+        type=str,
+        default="lenet5", # lenet5
+        choices=["lenet5", "2nn", "avgcnn", "mobile", "res18", "alex"],
+    )
+
+
     parser.add_argument(
         "-d",
         "--dataset",
@@ -32,31 +51,36 @@ def get_fedavg_argparser() -> ArgumentParser:
             "usps",
             "tiny_imagenet",
             "cinic10",
+            "toy_circle",
+            "toy_noisy",
         ],
         default="mnist",
     )
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--loss_name", type=str, choices=["bayessian", "ce"], default="ce")
-    parser.add_argument("--loss_entropy_weight", type=float, default=0.0)
-    parser.add_argument("--loss_log_prob_weight", type=float, default=0.0)
+    parser.add_argument("--loss_name", type=str, choices=["bayessian", "marginal_ll", "ce"], default="bayessian")
+    parser.add_argument("--loss_entropy_weight", type=float, default=0.0) # 0.5
+    parser.add_argument("--loss_log_prob_weight", type=float, default=0.0) # 1.0
+    parser.add_argument("--stop_grad_logp", type=str2bool, default=True)
+    parser.add_argument("--stop_grad_embeddings", type=str2bool, default=True)
+    parser.add_argument("--finetune_in_the_end", type=int, default=10) # 50
 
-    parser.add_argument("-jr", "--join_ratio", type=float, default=0.1)
-    parser.add_argument("-ge", "--global_epoch", type=int, default=100)
-    parser.add_argument("-le", "--local_epoch", type=int, default=5)
+    parser.add_argument("-jr", "--join_ratio", type=float, default=1.0) # default 0.1 (participation rate)
+    parser.add_argument("-ge", "--global_epoch", type=int, default=10) # default 100
+    parser.add_argument("-le", "--local_epoch", type=int, default=1) # default 5
     parser.add_argument("-fe", "--finetune_epoch", type=int, default=0)
     parser.add_argument("-tg", "--test_gap", type=int, default=100)
     parser.add_argument("-ee", "--eval_test", type=int, default=1)
     parser.add_argument("-er", "--eval_train", type=int, default=0)
-    parser.add_argument("-lr", "--local_lr", type=float, default=1e-2)
+    parser.add_argument("-lr", "--local_lr", type=float, default=1e-3) # default 1e-2
     parser.add_argument("-mom", "--momentum", type=float, default=0.0)
     parser.add_argument("-wd", "--weight_decay", type=float, default=0.0)
     parser.add_argument("-vg", "--verbose_gap", type=int, default=100000)
     parser.add_argument("-bs", "--batch_size", type=int, default=32)
     parser.add_argument("--server_cuda", type=int, default=1)
     parser.add_argument("--client_cuda", type=int, default=1)
-    parser.add_argument("--visible", type=int, default=1) # 1 - default!!!!
+    parser.add_argument("--visible", type=int, default=0) # 1 - default!!!!
     parser.add_argument("--save_log", type=int, default=1)
-    parser.add_argument("--save_model", type=int, default=0)
+    parser.add_argument("--save_model", type=int, default=1)
     parser.add_argument("--save_fig", type=int, default=1)
     parser.add_argument("--save_metrics", type=int, default=1)
     return parser
@@ -125,7 +149,7 @@ def get_moon_argparser() -> ArgumentParser:
 
 def get_scaffold_argparser() -> ArgumentParser:
     parser = get_fedavg_argparser()
-    parser.add_argument("--global_lr", type=float, default=1.0)
+    parser.add_argument("--global_lr", type=float, default=1.0) # default 1.0
     return parser
 
 

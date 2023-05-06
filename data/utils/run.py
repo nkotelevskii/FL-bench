@@ -131,6 +131,8 @@ if __name__ == "__main__":
             "usps",
             "tiny_imagenet",
             "cinic10",
+            "toy_circle",
+            "toy_noisy",
         ],
         default="cifar10",
     )
@@ -143,6 +145,8 @@ if __name__ == "__main__":
     parser.add_argument("--fraction", type=float, default=0.5)
     # For random assigning classes only
     parser.add_argument("-c", "--classes", type=int, default=0)
+    # For toy noisy only
+    parser.add_argument("--toy_noisy_classes", type=int, default=0)
     # For allocate shards only
     parser.add_argument("-s", "--shards", type=int, default=0)
     # For dirichlet distribution only

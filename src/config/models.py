@@ -12,6 +12,7 @@ import src.config.nat_pn.distributions as D
 from src.config.nat_pn.distributions import Posterior
 from src.config.flows.utils_flow import process_flow_batch
 from src.config.nat_pn.output.categorical import CategoricalOutput
+from copy import deepcopy
 
 
 class DecoupledModel(nn.Module):
@@ -181,6 +182,19 @@ class TwoNN(DecoupledModel):
             "cifar100": (3072, 100),
             "usps": (1536, 10),
             "synthetic": (60, 10),  # default dimension and classes
+            "toy_circle": (2, 10),
+            "toy_noisy_3": (2, 3),
+            "toy_noisy_5": (2, 5),
+            "toy_noisy_10": (2, 10),
+            "toy_noisy_15": (2, 15),
+            "toy_noisy_20": (2, 20),
+            "toy_noisy_30": (2, 30),
+            "toy_noisy_40": (2, 40),
+            "toy_noisy_50": (2, 50),
+            "toy_noisy_75": (2, 75),
+            "toy_noisy_100": (2, 100),
+            "toy_noisy_150": (2, 150),
+            "toy_noisy_200": (2, 200),
         }
 
         self.base = nn.Linear(config[dataset][0], 200)
@@ -301,65 +315,22 @@ class AlexNet(DecoupledModel):
 
 
 class NatPnModel(DecoupledModel):
-    def __init__(self, dataset):
+    def __init__(self, dataset, backbone: str, stop_grad_logp: bool, stop_grad_embeddings: bool):
         super(NatPnModel, self).__init__()
-        # config = {
-        #     "mnist": 10,
-        #     "medmnistS": 11,
-        #     "medmnistC": 11,
-        #     "medmnistA": 11,
-        #     "fmnist": 10,
-        #     "svhn": 10,
-        #     "emnist": 62,
-        #     "femnist": 62,
-        #     "cifar10": 10,
-        #     "cinic10": 10,
-        #     "cifar100": 100,
-        #     "covid19": 4,
-        #     "usps": 10,
-        #     "celeba": 2,
-        #     "tiny_imagenet": 200,
-        # }
 
-        # pretrained = True
-        # self.base = models.resnet18(
-        #     weights=models.ResNet18_Weights.DEFAULT if pretrained else None
-        # )
-        # self.classifier = CategoricalOutput(self.base.fc.in_features, config[dataset])
-
-        config = {
-            "mnist": (1, 1024, 10),
-            "medmnistS": (1, 1024, 11),
-            "medmnistC": (1, 1024, 11),
-            "medmnistA": (1, 1024, 11),
-            "covid19": (3, 196736, 4),
-            "fmnist": (1, 1024, 10),
-            "emnist": (1, 1024, 62),
-            "femnist": (1, 1, 62),
-            "cifar10": (3, 1600, 10),
-            "cinic10": (3, 1600, 10),
-            "cifar100": (3, 1600, 100),
-            "tiny_imagenet": (3, 3200, 200),
-            "celeba": (3, 133824, 2),
-            "svhn": (3, 1600, 10),
-            "usps": (1, 800, 10),
-        }
-        self.base = nn.Sequential(
-            OrderedDict(
-                conv1=nn.Conv2d(config[dataset][0], 32, 5),
-                activation1=nn.ReLU(),
-                pool1=nn.MaxPool2d(2),
-                conv2=nn.Conv2d(32, 64, 5),
-                activation2=nn.ReLU(),
-                pool2=nn.MaxPool2d(2),
-                flatten=nn.Flatten(),
-                fc1=nn.Linear(config[dataset][1], 512),
-            )
-        )
-        self.classifier = CategoricalOutput(512, config[dataset][2])
-        self.scaler = EvidenceScaler(dim=512, budget="normal")
-        self.flow = initialize_radial_flow(input_dim=512, n_transforms=30)
-        # self.base.fc = nn.Identity()
+        aux_model = MODEL_DICT[backbone](dataset=dataset)
+        embeddings_dim = aux_model.classifier.in_features
+        n_classes = aux_model.classifier.out_features
+        if backbone != '2nn':
+            self.base = deepcopy(aux_model.base)
+        else:
+            self.base = nn.Identity()
+            embeddings_dim = 2
+        self.stop_grad_logp = stop_grad_logp
+        self.stop_grad_embeddings = stop_grad_embeddings
+        self.classifier = CategoricalOutput(dim=embeddings_dim, num_classes=n_classes)
+        self.scaler = EvidenceScaler(dim=embeddings_dim, budget="normal")
+        self.flow = initialize_radial_flow(input_dim=embeddings_dim, n_transforms=30)
 
     def need_all_features(self):
         return
@@ -371,21 +342,43 @@ class NatPnModel(DecoupledModel):
         else:
             local_embeddings = x
 
-        log_prob = process_flow_batch(local_flow=self.flow,
-                                       batch_embeddings=local_embeddings)
-        log_evidence = self.scaler.forward(log_prob, True)
+        if self.stop_grad_embeddings:
+            log_prob = process_flow_batch(local_flow=self.flow,
+                                        batch_embeddings=local_embeddings.detach())
+            
+            for p in self.flow.parameters():
+                p.requires_grad_(False)
+            log_prob_for_ce = process_flow_batch(local_flow=self.flow,
+                                        batch_embeddings=local_embeddings)
+            log_prob_for_ce_clamped = self.scaler.forward(log_prob_for_ce,
+                                                           clamp_log_prob_value=True)
+            for p in self.flow.parameters():
+                p.requires_grad_(True)
+            
+        else:
+            log_prob = process_flow_batch(local_flow=self.flow,
+                            batch_embeddings=local_embeddings)
+
+        log_prob_clamped = self.scaler.forward(log_prob, clamp_log_prob_value=True)
+
         prediction = self.classifier(local_embeddings)
         sufficient_statistics = prediction.expected_sufficient_statistics()
-        update = D.PosteriorUpdate(sufficient_statistics=sufficient_statistics,
-                                log_evidence=log_evidence.detach())
+
+        if self.stop_grad_logp:
+            if self.stop_grad_embeddings:
+                update = D.PosteriorUpdate(sufficient_statistics=sufficient_statistics,
+                        log_evidence=log_prob_for_ce_clamped)
+            else:
+                update = D.PosteriorUpdate(sufficient_statistics=sufficient_statistics,
+                                        log_evidence=log_prob_clamped.detach())
+        else:
+            update = D.PosteriorUpdate(sufficient_statistics=sufficient_statistics,
+                        log_evidence=log_prob_clamped)
 
         y_pred = self.classifier.prior.update(update)
-
-        return y_pred, log_prob, local_embeddings
+        return y_pred, log_prob_clamped, local_embeddings
 
     def forward(self, x):
-        if x.shape[1] == 1:
-            x = torch.expand_copy(x, (x.shape[0], 3, *x.shape[2:]))
         return self.train_forward(x)[0].alpha.log()
 
     # def forward(self, x: torch.Tensor):
