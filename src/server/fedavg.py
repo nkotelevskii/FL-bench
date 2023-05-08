@@ -19,11 +19,12 @@ _PROJECT_DIR = Path(__file__).parent.parent.parent.abspath()
 
 sys.path.append(_PROJECT_DIR)
 
-from src.config.utils import OUT_DIR, fix_random_seed, trainable_params, reset_flow_and_classifier_params
-from src.config.models import MODEL_DICT
-from src.config.args import get_fedavg_argparser
-from src.client.fedavg import FedAvgClient
 from src.config.utils import evaluate_accuracy, evaluate_only_classifier
+from src.config.nat_pn.loss import BayesianLoss
+from src.client.fedavg import FedAvgClient
+from src.config.args import get_fedavg_argparser
+from src.config.models import MODEL_DICT
+from src.config.utils import OUT_DIR, fix_random_seed, trainable_params, reset_flow_and_classifier_params
 
 
 class FedAvgServer:
@@ -123,16 +124,17 @@ class FedAvgServer:
     def reinitialize_model(self,):
         if self.args.model == "natpn":
             if self.args.dataset == "toy_noisy":
-                dataset = self.args.dataset + f"_{self.args.dataset_args['toy_noisy_classes']}"
+                dataset = self.args.dataset + \
+                    f"_{self.args.dataset_args['toy_noisy_classes']}"
             else:
                 dataset = self.args.dataset
             self.dataset_name = dataset
 
             self.model = MODEL_DICT[self.args.model](self.dataset_name,
-                                                    self.args.nat_pn_backbone,
-                                                    self.args.stop_grad_logp,
-                                                    self.args.stop_grad_embeddings,
-                                                    ).to(self.device)
+                                                     self.args.nat_pn_backbone,
+                                                     self.args.stop_grad_logp,
+                                                     self.args.stop_grad_embeddings,
+                                                     ).to(self.device)
         else:
             self.model = MODEL_DICT[self.args.model](
                 self.args.dataset).to(self.device)
@@ -194,7 +196,7 @@ class FedAvgServer:
             # print(f'Only classifier {np.mean(mean_only_classifier)}')
             # print(f'Logprob {np.mean(mean_log_prob)}')
             # # ####
-            
+
             # self.log_info()
             # self.trainer.scheduler.step()
 
@@ -252,7 +254,8 @@ class FedAvgServer:
 
     @torch.no_grad()
     def aggregate(self, delta_cache: List[List[torch.Tensor]], weight_cache: List[int]):
-        weights = torch.tensor(weight_cache, device=self.device) / sum(weight_cache)
+        weights = torch.tensor(
+            weight_cache, device=self.device) / sum(weight_cache)
         delta_list = [list(delta.values()) for delta in delta_cache]
         aggregated_delta = [
             torch.sum(weights * torch.stack(diff, dim=-1), dim=-1)
@@ -433,13 +436,20 @@ class FedAvgServer:
 
         self.trainer.set_parameters(self.global_params_dict)
         global_model = self.trainer.model
-        all_models_dict["global"] = deepcopy(global_model.state_dict(keep_vars=True))
+        all_models_dict["global"] = deepcopy(
+            global_model.state_dict(keep_vars=True))
 
         if self.args.finetune_in_the_end > 0:
+            self.trainer.criterion = BayesianLoss(
+                entropy_weight=0.0,
+                log_prob_weight=self.args.loss_log_prob_weight,
+                embeddings_weight=0.0,
+            )
             self.trainer.local_epoch = self.args.finetune_in_the_end
             for client_id in tqdm(range(self.client_num_in_total)):
                 client_local_params = self.generate_client_params(client_id)
-                client_local_params = reset_flow_and_classifier_params(client_local_params)
+                client_local_params = reset_flow_and_classifier_params(
+                    client_local_params)
                 new_params, _, _ = self.trainer.train(
                     client_id=client_id,
                     new_parameters=client_local_params,
@@ -447,15 +457,16 @@ class FedAvgServer:
                     verbose=False,
                     train_base_model=False,
                 )
-                all_models_dict[client_id] = deepcopy(self.trainer.model.state_dict(keep_vars=True))
+                all_models_dict[client_id] = deepcopy(
+                    self.trainer.model.state_dict(keep_vars=True))
         text_stopgrad_logp = "_stopgrad_logp" if self.args.stop_grad_logp else ""
         text_stopgrad_embeddings = "_stopgrad_embeddings" if self.args.stop_grad_embeddings else ""
         if self.args.dataset == 'toy_noisy':
             torch.save(all_models_dict, OUT_DIR / self.algo /
-                   f"all_params_{self.args.dataset_args['toy_noisy_classes']}{text_stopgrad_logp}{text_stopgrad_embeddings}_{self.args.seed}_{model_name}")
+                       f"all_params_{self.args.dataset_args['toy_noisy_classes']}{text_stopgrad_logp}{text_stopgrad_embeddings}_{self.args.seed}_{model_name}")
         else:
             torch.save(all_models_dict, OUT_DIR / self.algo /
-                    f"all_params{text_stopgrad_logp}{text_stopgrad_embeddings}_{model_name}")
+                       f"all_params{text_stopgrad_logp}{text_stopgrad_embeddings}_{model_name}")
 
 
 if __name__ == "__main__":

@@ -6,6 +6,17 @@ from pyro.distributions.transforms import AffineCoupling, Permute, ComposeTransf
 from pyro.nn import DenseNN
 import math
 
+class PermuteModule(torch.nn.Module):
+    def __init__(self, permutation):
+        super(PermuteModule, self).__init__()
+        self.permute = Permute(permutation)
+
+    def forward(self, x):
+        return self.permute(x)
+
+    def inverse(self, y):
+        return self.permute.inv(y)
+
 
 def initialize_realnvp_flow(input_dim: int = 2, split_dim: int = 1, n_transforms: int = 2,
                             device: Optional[Union[str, torch.device]] = 'cpu') -> ComposeTransformModule:
@@ -18,17 +29,19 @@ def initialize_realnvp_flow(input_dim: int = 2, split_dim: int = 1, n_transforms
     :return:
     """
     param_dims = [input_dim - split_dim, input_dim - split_dim]
+    hidden_multiplier = 2
     hypernet = DenseNN(
-        split_dim, [10 * input_dim], param_dims, nonlinearity=torch.nn.ELU()).to(device)
+        split_dim, [hidden_multiplier * input_dim], param_dims, nonlinearity=torch.nn.ELU()).to(device)
     list_of_transforms: list[TransformModule] = [
         AffineCoupling(split_dim, hypernet).to(device)]
     for i in range(n_transforms):
         order = ((i % 2) * 2 - 1)
-        hypernet = DenseNN(split_dim, [10 * input_dim], param_dims).to(device)
+        hypernet = DenseNN(split_dim, [hidden_multiplier * input_dim], param_dims).to(device)
         list_of_transforms.extend([
-            Permute(permutation=torch.LongTensor(
-                [i for i in range(input_dim)][::order]).to(device)),
-            # BatchNorm(input_dim=input_dim, ),
+            # Permute(permutation=torch.LongTensor(
+            #     [i for i in range(input_dim)][::order]).to(device)),
+            # PermuteModule(permutation=torch.LongTensor(
+            # [i for i in range(input_dim)][::order]).to(device)),
             AffineCoupling(split_dim, hypernet).to(device),
         ])
     composed_list = ComposeTransformModule(list_of_transforms)

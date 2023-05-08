@@ -9,6 +9,14 @@ from path import Path
 from torch.utils.data import DataLoader
 from src.config.nat_pn.loss import BayesianLoss, LogMarginalLoss
 from src.config.models import NatPnModel
+from src.config.uncertainty_metrics import (
+    mutual_information,
+    reverse_mutual_information,
+    expected_pairwise_kullback_leibler,
+    load_dataloaders,
+    load_dataset,
+    load_model
+)
 from copy import deepcopy
 import math
 
@@ -85,9 +93,9 @@ def evaluate(
     for x, y in dataloader:
         x, y = x.to(device), y.to(device)
         if isinstance(criterion, BayesianLoss) or isinstance(criterion, LogMarginalLoss):
-            y_pred, log_prob, _ = model.train_forward(x)
+            y_pred, log_prob, embeddings = model.train_forward(x)
             logits = y_pred.alpha.log()
-            loss += criterion(y_pred, y, log_prob).item()
+            loss += criterion(y_pred, y, log_prob, embeddings).item()
         else:
             logits = model(x)
             loss += criterion(logits, y).item()
@@ -111,7 +119,7 @@ def evaluate_accuracy(
         x, y = x.to(device), y.to(device)
         if isinstance(model, NatPnModel):
             y_pred, log_prob, _ = model.train_forward(x)
-            print(f"***************** logprob: {log_prob.cpu().mean()}")
+            # print(f"***************** logprob: {log_prob.cpu().mean()}")
             logits = y_pred.alpha
             mean_log_prob.append(log_prob.cpu().numpy())
         else:
@@ -119,16 +127,17 @@ def evaluate_accuracy(
         pred = torch.argmax(logits, -1)
         correct += (pred == y).sum().item()
         sample_num += len(y)
-    
+
     return correct / sample_num, np.mean(np.hstack(mean_log_prob))
+
 
 @torch.no_grad()
 def evaluate_switch(
     local_model: torch.nn.Module,
     global_model: torch.nn.Module,
     dataloader: DataLoader,
-    logprob_threshold: float,
-    criterion: torch.nn.Module,
+    threshold: float,
+    uncertainty_measure: str,
     device=torch.device("cpu"),
 ) -> tuple[float, float, int]:
     local_model.eval()
@@ -137,36 +146,92 @@ def evaluate_switch(
     correct_global = 0
     correct_decision = 0
 
-    loss_local = 0
-    loss_global = 0
     sample_num = 0
     for x, y in dataloader:
         x, y = x.to(device), y.to(device)
 
-        y_pred_local, log_prob_local, _ = local_model.train_forward(x)
-        y_pred_global, log_prob_global, _ = global_model.train_forward(x)
+        y_pred_local, log_prob_local, _ = local_model.train_forward(x, clamp=False)
+        y_pred_global, _, _ = global_model.train_forward(x, clamp=False)
 
-        logits_local = y_pred_local.alpha.log()
-        logits_global = y_pred_global.alpha.log()
-        
-        threshold_torch = logprob_threshold * torch.ones_like(log_prob_local)
+        alpha_local = y_pred_local.alpha
+        alpha_global = y_pred_global.alpha
 
-        logit_after_decision = torch.where((log_prob_local > threshold_torch)[..., None], logits_local, logits_global)
+        threshold_torch = threshold * torch.ones_like(alpha_local[:, 0])
 
-        loss_local += criterion(y_pred_local, y, log_prob_local).item()
-        loss_global += criterion(y_pred_global, y, log_prob_global).item()
+        if uncertainty_measure == 'mi':
+            local_measure = mutual_information(alpha=alpha_local.cpu().numpy())
+        elif uncertainty_measure == 'rmi':
+            local_measure = reverse_mutual_information(
+                alpha=alpha_local.cpu().numpy())
+        elif uncertainty_measure == 'epkl':
+            local_measure = expected_pairwise_kullback_leibler(
+                alpha=alpha_local.cpu().numpy())
+        elif uncertainty_measure == 'entropy':
+            local_measure = y_pred_local.entropy().cpu().numpy()
+        elif uncertainty_measure == 'log_prob':
+            local_measure = log_prob_local.cpu().numpy()
+        else:
+            raise ValueError(
+                f'No such uncertainty measure available! {uncertainty_measure}')
 
-        pred_local = torch.argmax(logits_local, -1)
-        pred_global = torch.argmax(logits_global, -1)
-        pred_after_decision = torch.argmax(logit_after_decision, -1)
+        local_measure = torch.tensor(local_measure) * torch.ones_like(alpha_local[:, 0])
+        if uncertainty_measure != 'log_prob':
+            alphas_after_decision = torch.where((local_measure < threshold_torch)[..., None],
+                                                alpha_local, alpha_global)
+        else:
+            alphas_after_decision = torch.where((local_measure > threshold_torch)[..., None],
+                                    alpha_local, alpha_global)
+
+        pred_local = torch.argmax(alpha_local, -1)
+        pred_global = torch.argmax(alpha_global, -1)
+        pred_after_decision = torch.argmax(alphas_after_decision, -1)
 
         correct_local += (pred_local == y).sum().item()
         correct_global += (pred_global == y).sum().item()
         correct_decision += (pred_after_decision == y).sum().item()
 
-
         sample_num += len(y)
-    return correct_decision, loss_local, correct_local, loss_global, correct_global, sample_num
+    return correct_decision, correct_local, correct_global, sample_num
+
+
+@torch.no_grad()
+def validate_accuracy_per_client(
+        dataset_name: str,
+        backbone: str,
+        stopgrad: bool,
+        criterion: torch.nn.Module,
+        all_params_dict: dict[int, torch.Tensor],
+        device: str,
+        validate_only_classifier: bool = False,
+) -> None:
+    data_indices, trainset, testset = load_dataset(dataset_name=dataset_name)
+    for index in ['global'] + [i for i in range(len(data_indices))]:
+        print("model index is: ", index)
+
+        current_model = load_model(
+            dataset_name=dataset_name,
+            backbone=backbone,
+            stopgrad=stopgrad,
+            index=index,
+            all_params_dict=all_params_dict,
+        )
+
+        for dataset_index in range(len(data_indices)):
+            _, testloader, _ = load_dataloaders(
+                client_id=dataset_index, data_indices=data_indices, trainset=trainset, testset=testset
+            )
+            test_loss, test_correct, test_sample_num = evaluate(
+                model=current_model,
+                dataloader=testloader,
+                criterion=criterion
+            )
+            if isinstance(current_model, NatPnModel) and validate_only_classifier:
+                correct, overall = evaluate_only_classifier(
+                    model=current_model, dataloader=testloader, device=device)
+                print(
+                    f"{dataset_index}: {test_correct / test_sample_num} \t Accuracy only classifier: {correct.sum() / overall}")
+            else:
+                print(f"{dataset_index}: {test_correct / test_sample_num}")
 
 
 @torch.no_grad()

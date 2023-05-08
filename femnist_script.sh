@@ -1,6 +1,7 @@
 cd ./src/server
 
 CUDA_VISIBLE_DEVICES=1 python fedavg.py --dataset femnist \
+ --join_ratio 0.1 \ 
  --nat_pn_backbone lenet5 \
  --loss_name bayessian \
  --loss_log_prob_weight 0.0 \

@@ -64,11 +64,13 @@ class FedAvgClient:
             self.criterion = BayesianLoss(
                 entropy_weight=self.args.loss_entropy_weight,
                 log_prob_weight=self.args.loss_log_prob_weight,
+                embeddings_weight=self.args.loss_embeddings_weight,
                                           )
         elif self.args.loss_name == "marginal_ll":
             self.criterion = LogMarginalLoss(
                 entropy_weight=self.args.loss_entropy_weight,
                 log_prob_weight=self.args.loss_log_prob_weight,
+                embeddings_weight=self.args.loss_embeddings_weight,
             )
         else:
             self.criterion = torch.nn.CrossEntropyLoss().to(self.device)
@@ -200,8 +202,8 @@ class FedAvgClient:
 
                 x, y = x.to(self.device), y.to(self.device)
                 if isinstance(self.criterion, BayesianLoss) or isinstance(self.criterion, LogMarginalLoss):
-                    y_pred, log_prob, _ = self.model.train_forward(x)
-                    loss = self.criterion(y_pred, y, log_prob)
+                    y_pred, log_prob, embeddings = self.model.train_forward(x)
+                    loss = self.criterion(y_pred, y, log_prob, embeddings)
                     
                 else:
                     logit = self.model(x)

@@ -58,14 +58,15 @@ def get_fedavg_argparser() -> ArgumentParser:
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--loss_name", type=str, choices=["bayessian", "marginal_ll", "ce"], default="bayessian")
-    parser.add_argument("--loss_entropy_weight", type=float, default=0.0) # 0.5
-    parser.add_argument("--loss_log_prob_weight", type=float, default=0.0) # 1.0
+    parser.add_argument("--loss_entropy_weight", type=float, default=0.01) # 0.5
+    parser.add_argument("--loss_log_prob_weight", type=float, default=0.0001) # 1.0
+    parser.add_argument("--loss_embeddings_weight", type=float, default=1.0) # 1.0
     parser.add_argument("--stop_grad_logp", type=str2bool, default=True)
     parser.add_argument("--stop_grad_embeddings", type=str2bool, default=True)
     parser.add_argument("--finetune_in_the_end", type=int, default=10) # 50
 
     parser.add_argument("-jr", "--join_ratio", type=float, default=1.0) # default 0.1 (participation rate)
-    parser.add_argument("-ge", "--global_epoch", type=int, default=10) # default 100
+    parser.add_argument("-ge", "--global_epoch", type=int, default=1) # default 100
     parser.add_argument("-le", "--local_epoch", type=int, default=1) # default 5
     parser.add_argument("-fe", "--finetune_epoch", type=int, default=0)
     parser.add_argument("-tg", "--test_gap", type=int, default=100)
@@ -79,10 +80,10 @@ def get_fedavg_argparser() -> ArgumentParser:
     parser.add_argument("--server_cuda", type=int, default=1)
     parser.add_argument("--client_cuda", type=int, default=1)
     parser.add_argument("--visible", type=int, default=0) # 1 - default!!!!
-    parser.add_argument("--save_log", type=int, default=1)
+    parser.add_argument("--save_log", type=int, default=0)
     parser.add_argument("--save_model", type=int, default=1)
-    parser.add_argument("--save_fig", type=int, default=1)
-    parser.add_argument("--save_metrics", type=int, default=1)
+    parser.add_argument("--save_fig", type=int, default=0)
+    parser.add_argument("--save_metrics", type=int, default=0)
     return parser
 
 

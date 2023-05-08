@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
 from src.config.nat_pn.scaler import EvidenceScaler
-from src.config.flows.utils_flow import initialize_radial_flow
+from src.config.flows.utils_flow import initialize_radial_flow, initialize_realnvp_flow
 from pyro.distributions.transforms import ComposeTransform
 import src.config.nat_pn.distributions as D
 from src.config.nat_pn.distributions import Posterior
@@ -331,11 +331,12 @@ class NatPnModel(DecoupledModel):
         self.classifier = CategoricalOutput(dim=embeddings_dim, num_classes=n_classes)
         self.scaler = EvidenceScaler(dim=embeddings_dim, budget="normal")
         self.flow = initialize_radial_flow(input_dim=embeddings_dim, n_transforms=30)
+        # self.flow = initialize_realnvp_flow(input_dim=embeddings_dim, n_transforms=5, )
 
     def need_all_features(self):
         return
 
-    def train_forward(self, x: torch.Tensor) -> tuple[Posterior, torch.Tensor, torch.Tensor]:
+    def train_forward(self, x: torch.Tensor, clamp: bool = True) -> tuple[Posterior, torch.Tensor, torch.Tensor]:
 
         if self.base is not None:
             local_embeddings = self.base(x)
@@ -346,20 +347,21 @@ class NatPnModel(DecoupledModel):
             log_prob = process_flow_batch(local_flow=self.flow,
                                         batch_embeddings=local_embeddings.detach())
             
-            for p in self.flow.parameters():
-                p.requires_grad_(False)
-            log_prob_for_ce = process_flow_batch(local_flow=self.flow,
-                                        batch_embeddings=local_embeddings)
+            # for p in self.flow.parameters():
+            #     p.requires_grad_(False)
+            # log_prob_for_ce = process_flow_batch(local_flow=self.flow,
+            #                             batch_embeddings=local_embeddings)
+            log_prob_for_ce = log_prob.clone()
             log_prob_for_ce_clamped = self.scaler.forward(log_prob_for_ce,
                                                            clamp_log_prob_value=True)
-            for p in self.flow.parameters():
-                p.requires_grad_(True)
+            # for p in self.flow.parameters():
+            #     p.requires_grad_(True)
             
         else:
             log_prob = process_flow_batch(local_flow=self.flow,
                             batch_embeddings=local_embeddings)
 
-        log_prob_clamped = self.scaler.forward(log_prob, clamp_log_prob_value=True)
+        log_prob_processed = self.scaler.forward(log_prob, clamp_log_prob_value=True)
 
         prediction = self.classifier(local_embeddings)
         sufficient_statistics = prediction.expected_sufficient_statistics()
@@ -370,13 +372,18 @@ class NatPnModel(DecoupledModel):
                         log_evidence=log_prob_for_ce_clamped)
             else:
                 update = D.PosteriorUpdate(sufficient_statistics=sufficient_statistics,
-                                        log_evidence=log_prob_clamped.detach())
+                                        log_evidence=log_prob_processed.detach())
         else:
             update = D.PosteriorUpdate(sufficient_statistics=sufficient_statistics,
-                        log_evidence=log_prob_clamped)
+                        log_evidence=log_prob_processed)
 
         y_pred = self.classifier.prior.update(update)
-        return y_pred, log_prob_clamped, local_embeddings
+
+        if not clamp:
+            log_prob_processed = process_flow_batch(local_flow=self.flow,
+                                        batch_embeddings=local_embeddings.detach())
+
+        return y_pred, log_prob_processed, local_embeddings
 
     def forward(self, x):
         return self.train_forward(x)[0].alpha.log()
