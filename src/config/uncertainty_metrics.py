@@ -8,14 +8,28 @@ from data.utils.datasets import DATASETS
 import torch
 from src.config.models import NatPnModel
 from copy import deepcopy
+from typing import Optional
 
 
-def load_dataset(dataset_name: str) -> tuple[list[list[int]], Subset, Subset]:
+def H(n):
+    """Returns an approximate value of n-th harmonic number.
+
+       http://en.wikipedia.org/wiki/Harmonic_number
+    """
+    # Euler-Mascheroni constant
+    gamma = 0.57721566490153286060651209008240243104215933593992
+    return gamma + np.log(n) + 0.5/n - 1./(12*n**2) + 1./(120*n**4)
+
+
+def load_dataset(dataset_name: str,
+                  normalization_name: Optional[str] = None) -> tuple[list[list[int]], Subset, Subset]:
+    if normalization_name is None:
+        normalization_name = dataset_name
     with open(f'../data/{dataset_name}/partition.pkl', 'rb') as file:
         partition = pickle.load(file, )
     data_indices: list[list[int]] = partition["data_indices"]
     transform = Compose(
-        [Normalize(MEAN[dataset_name], STD[dataset_name])]
+        [Normalize(MEAN[normalization_name], STD[normalization_name])]
     )
 
     dataset = DATASETS[dataset_name](
@@ -40,17 +54,18 @@ def load_dataloaders(
     trainset.indices = data_indices[client_id]["train"]
     trainloader = DataLoader(trainset, 32)
 
-    n_val = int(0.9 * len(data_indices[client_id]["test"]))
+    n_val = int(0.6 * len(data_indices[client_id]["test"]))
+    np.random.seed(42)
     val_indices = np.random.choice(
         data_indices[client_id]["test"], size=n_val, replace=False, )
     cal_indices = np.array(
         [ind for ind in data_indices[client_id]["test"] if ind not in val_indices])
 
     testset.indices = val_indices
-    testloader = DataLoader(testset, 32)
+    testloader = DataLoader(testset, 32, shuffle=False)
 
     testset.indices = cal_indices
-    calloader = DataLoader(testset, 32)
+    calloader = DataLoader(testset, 32, shuffle=False)
 
     return trainloader, testloader, calloader
 
@@ -69,6 +84,8 @@ def load_model(
                        )
 
     model.load_state_dict(all_params_dict[index], strict=False)
+    model.labels = all_params_dict[index]['labels']
+    model.labels_frequency = all_params_dict[index]['labels_frequency']
     current_model = deepcopy(model)
     current_model.eval()
     return current_model
@@ -85,6 +102,7 @@ def choose_threshold(
     rmis = []  # Reverse Mutual Informations
     epkls = []  # Expected Pairwise Kullback Leiblers divergences
     entropies = []  # Entropies of Dirichlet
+    categorical_entropies = [] # Expected entropy (expectation over Dirichlet of Categoricals)
     log_probs = []  # Logarithms of embedding's density
     for x, y in calloader:
         x, y = x.to(device), y.to(device)
@@ -95,23 +113,27 @@ def choose_threshold(
         rmi = reverse_mutual_information(alpha=alphas)
         epkl = expected_pairwise_kullback_leibler(alpha=alphas)
         entropy = y_pred.entropy().cpu().numpy()
+        categorical_entropy = expected_entropy(alpha=alphas)
 
         mis.append(mi)
         rmis.append(rmi)
         epkls.append(epkl)
         entropies.append(entropy)
         log_probs.append(log_prob.cpu().numpy())
+        categorical_entropies.append(categorical_entropy)
 
     mis = np.hstack(mis)
     rmis = np.hstack(rmis)
     epkls = np.hstack(epkls)
     entropies = np.hstack(entropies)
     log_probs = np.hstack(log_probs)
+    categorical_entropies = np.hstack(categorical_entropies)
 
     threshold_mi = np.quantile(mis, alpha)
     threshold_rmi = np.quantile(rmis, alpha)
     threshold_epkl = np.quantile(epkls, alpha)
     threshold_entropy = np.quantile(entropies, alpha)
+    threshold_categorical_entropy = np.quantile(categorical_entropies, alpha)
     threshold_log_prob = np.quantile(log_probs, 1 - alpha)
     thresholds = {
         "mi": threshold_mi,
@@ -119,6 +141,7 @@ def choose_threshold(
         "epkl": threshold_epkl,
         "entropy": threshold_entropy,
         "log_prob": threshold_log_prob,
+        "categorical_entropy": threshold_categorical_entropy,
     }
     values = {
         "mi": mis,
@@ -126,6 +149,7 @@ def choose_threshold(
         "epkl": epkls,
         "entropy": entropies,
         "log_prob": log_probs,
+        "categorical_entropy": categorical_entropies,
     }
     return thresholds, values
 
@@ -185,6 +209,11 @@ def expected_entropy(alpha: np.ndarray):
         alpha (np.ndarray): size N_objects x K_classes
     """
     alpha_0 = np.sum(alpha, keepdims=True, axis=1)
-    exp_entropy = np.sum(alpha / alpha_0 * (digamma(alpha + 1) - digamma(alpha_0 + 1)),
+    # exact
+    exact = np.sum(alpha / alpha_0 * (digamma(alpha + 1) - digamma(alpha_0 + 1)),
                          axis=1)
-    return exp_entropy
+
+    # approximation
+    approx = np.sum(alpha / alpha_0 * (np.log(alpha) - np.log(alpha_0)), axis=-1)
+
+    return np.where(alpha_0[:, 0] >= 10000, approx, exact)

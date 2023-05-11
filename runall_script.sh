@@ -7,7 +7,7 @@ CUDA_VISIBLE_DEVICES=0 python fedavg.py --dataset mnist \
  --loss_entropy_weight 0.001 \
  --loss_embeddings_weight 1.0 \
  --finetune_in_the_end 10 \
- --global_epoch 100 \
+ --global_epoch 250 \
  --local_epoch 1 \
  --stop_grad_logp true \
  --stop_grad_embeddings true \
@@ -27,7 +27,7 @@ CUDA_VISIBLE_DEVICES=0 python fedavg.py --dataset mnist \
  --loss_entropy_weight 0.001 \
  --loss_embeddings_weight 1.0 \
  --finetune_in_the_end 10 \
- --global_epoch 100 \
+ --global_epoch 250 \
  --local_epoch 1 \
  --stop_grad_logp true \
  --stop_grad_embeddings true \
@@ -47,7 +47,7 @@ CUDA_VISIBLE_DEVICES=0 python fedavg.py --dataset medmnistS \
  --loss_entropy_weight 0.001 \
  --loss_embeddings_weight 1.0 \
  --finetune_in_the_end 10 \
- --global_epoch 100 \
+ --global_epoch 250 \
  --local_epoch 1 \
  --stop_grad_logp true \
  --stop_grad_embeddings true \
@@ -67,7 +67,7 @@ CUDA_VISIBLE_DEVICES=0 python fedavg.py --dataset medmnistS \
  --loss_entropy_weight 0.001 \
  --loss_embeddings_weight 1.0 \
  --finetune_in_the_end 10 \
- --global_epoch 100 \
+ --global_epoch 250 \
  --local_epoch 1 \
  --stop_grad_logp true \
  --stop_grad_embeddings true \
@@ -87,7 +87,7 @@ CUDA_VISIBLE_DEVICES=0 python fedavg.py --dataset medmnistS \
  --loss_entropy_weight 0.001 \
  --loss_embeddings_weight 1.0 \
  --finetune_in_the_end 10 \
- --global_epoch 100 \
+ --global_epoch 250 \
  --local_epoch 1 \
  --stop_grad_logp true \
  --stop_grad_embeddings true \
@@ -107,7 +107,7 @@ CUDA_VISIBLE_DEVICES=0 python fedavg.py --dataset medmnistS \
  --loss_entropy_weight 0.001 \
  --loss_embeddings_weight 1.0 \
  --finetune_in_the_end 10 \
- --global_epoch 100 \
+ --global_epoch 250 \
  --local_epoch 1 \
  --stop_grad_logp true \
  --stop_grad_embeddings true \
@@ -127,7 +127,7 @@ CUDA_VISIBLE_DEVICES=0 python fedavg.py --dataset svhn \
  --loss_entropy_weight 0.001 \
  --loss_embeddings_weight 1.0 \
  --finetune_in_the_end 10 \
- --global_epoch 100 \
+ --global_epoch 250 \
  --local_epoch 1 \
  --stop_grad_logp true \
  --stop_grad_embeddings true \

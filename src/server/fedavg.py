@@ -133,7 +133,7 @@ class FedAvgServer:
             self.model = MODEL_DICT[self.args.model](self.dataset_name,
                                                      self.args.nat_pn_backbone,
                                                      self.args.stop_grad_logp,
-                                                     self.args.stop_grad_embeddings,
+                                                     self.args.stop_grad_embeddings
                                                      ).to(self.device)
         else:
             self.model = MODEL_DICT[self.args.model](
@@ -168,37 +168,6 @@ class FedAvgServer:
 
             self.aggregate(delta_cache, weight_cache)
 
-            # ####
-            # mean_global_accuracy = []
-            # mean_only_classifier = []
-            # mean_log_prob = []
-            # for i in range(self.client_num_in_total):
-            #     self.trainer.client_id = i
-            #     self.trainer.load_dataset()
-            #     self.trainer.set_parameters(self.global_params_dict)
-            #     eval_model = deepcopy(self.trainer.model)
-            #     eval_model.eval()
-
-            #     accuracy, log_prob = evaluate_accuracy(
-            #         model=eval_model,
-            #         dataloader=self.trainer.testloader,
-            #         device=self.device,
-            #     )
-            #     correct, n_samples = evaluate_only_classifier(
-            #         model=eval_model,
-            #         dataloader=self.trainer.testloader,
-            #         device=self.device,
-            #     )
-            #     mean_only_classifier.append(correct.sum() / n_samples)
-            #     mean_global_accuracy.append(accuracy)
-            #     mean_log_prob.append(log_prob)
-            # print(f'Global {np.mean(mean_global_accuracy)}')
-            # print(f'Only classifier {np.mean(mean_only_classifier)}')
-            # print(f'Logprob {np.mean(mean_log_prob)}')
-            # # ####
-
-            # self.log_info()
-            # self.trainer.scheduler.step()
 
     def test(self):
         loss_before, loss_after = [], []
@@ -439,6 +408,15 @@ class FedAvgServer:
         all_models_dict["global"] = deepcopy(
             global_model.state_dict(keep_vars=True))
 
+
+        self.trainer.init_personal_params_dict: Dict[str, torch.Tensor] = {
+            key: param.clone().detach()
+            for key, param in self.trainer.model.state_dict(keep_vars=True).items()
+            if not param.requires_grad
+        }
+        self.trainer.reset_optimizers("Adam")
+        self.trainer.is_federated_stage = False
+
         if self.args.finetune_in_the_end > 0:
             self.trainer.criterion = BayesianLoss(
                 entropy_weight=0.0,
@@ -461,12 +439,14 @@ class FedAvgServer:
                     self.trainer.model.state_dict(keep_vars=True))
         text_stopgrad_logp = "_stopgrad_logp" if self.args.stop_grad_logp else ""
         text_stopgrad_embeddings = "_stopgrad_embeddings" if self.args.stop_grad_embeddings else ""
+        if self.args.save_prefix is not None:
+            self.args.save_prefix = self.args.save_prefix + '_'
         if self.args.dataset == 'toy_noisy':
             torch.save(all_models_dict, OUT_DIR / self.algo /
-                       f"all_params_{self.args.dataset_args['toy_noisy_classes']}{text_stopgrad_logp}{text_stopgrad_embeddings}_{self.args.seed}_{model_name}")
+                       f"{self.args.save_prefix}all_params_{self.args.dataset_args['toy_noisy_classes']}{text_stopgrad_logp}{text_stopgrad_embeddings}_{self.args.seed}_{model_name}")
         else:
             torch.save(all_models_dict, OUT_DIR / self.algo /
-                       f"all_params{text_stopgrad_logp}{text_stopgrad_embeddings}_{model_name}")
+                       f"{self.args.save_prefix}all_params{text_stopgrad_logp}{text_stopgrad_embeddings}_{model_name}")
 
 
 if __name__ == "__main__":

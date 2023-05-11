@@ -12,6 +12,7 @@ from src.config.models import NatPnModel
 from src.config.uncertainty_metrics import (
     mutual_information,
     reverse_mutual_information,
+    expected_entropy,
     expected_pairwise_kullback_leibler,
     load_dataloaders,
     load_dataset,
@@ -170,11 +171,13 @@ def evaluate_switch(
             local_measure = y_pred_local.entropy().cpu().numpy()
         elif uncertainty_measure == 'log_prob':
             local_measure = log_prob_local.cpu().numpy()
+        elif uncertainty_measure == 'categorical_entropy':
+            local_measure = expected_entropy(alpha=alpha_local.cpu().numpy())
         else:
             raise ValueError(
                 f'No such uncertainty measure available! {uncertainty_measure}')
 
-        local_measure = torch.tensor(local_measure) * torch.ones_like(alpha_local[:, 0])
+        local_measure = torch.tensor(local_measure, device=device) * torch.ones_like(alpha_local[:, 0])
         if uncertainty_measure != 'log_prob':
             alphas_after_decision = torch.where((local_measure < threshold_torch)[..., None],
                                                 alpha_local, alpha_global)

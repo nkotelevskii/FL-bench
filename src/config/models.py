@@ -7,12 +7,13 @@ import torch.nn.functional as F
 import torchvision.models as models
 from src.config.nat_pn.scaler import EvidenceScaler
 from src.config.flows.utils_flow import initialize_radial_flow, initialize_realnvp_flow
-from pyro.distributions.transforms import ComposeTransform
+from pyro.distributions.transforms import ComposeTransformModule
 import src.config.nat_pn.distributions as D
 from src.config.nat_pn.distributions import Posterior
 from src.config.flows.utils_flow import process_flow_batch
 from src.config.nat_pn.output.categorical import CategoricalOutput
 from copy import deepcopy
+import numpy as np
 
 
 class DecoupledModel(nn.Module):
@@ -22,7 +23,7 @@ class DecoupledModel(nn.Module):
         self.all_features = []
         self.base: nn.Module = None
         self.classifier: nn.Module = None
-        self.flow: Optional[ComposeTransform] = None
+        self.flow: Optional[ComposeTransformModule] = None
         self.dropout: List[nn.Module] = []
 
     def need_all_features(self):
@@ -314,8 +315,34 @@ class AlexNet(DecoupledModel):
         self.base.classifier[-1] = nn.Identity()
 
 
+def marginalize_log_prob(
+    local_embeddings: torch.Tensor,
+        flow: nn.ModuleList,
+        labels: torch.Tensor,
+        labels_frequency: torch.Tensor,
+) -> torch.Tensor:
+    # Default behavior without labels, e.g., compute embeddings
+    # Example: return self.embedding_layer(x)
+    log_probs = torch.tensor(
+        [], device=local_embeddings.device, dtype=torch.float32)
+    for i, flow_index in enumerate(labels):
+        log_prob = process_flow_batch(local_flow=flow[flow_index],
+                                      batch_embeddings=local_embeddings)
+        log_p_c = torch.log(labels_frequency[i]).to(local_embeddings.device)
+        log_probs = torch.cat([log_probs, log_prob[None] + log_p_c], dim=0)
+    log_probs = torch.logsumexp(log_probs, dim=0)
+    return log_probs
+
+
 class NatPnModel(DecoupledModel):
-    def __init__(self, dataset, backbone: str, stop_grad_logp: bool, stop_grad_embeddings: bool):
+    def __init__(
+        self, dataset,
+            backbone: str,
+            stop_grad_logp: bool,
+            stop_grad_embeddings: bool,
+            labels: Optional[torch.Tensor] = None,
+            labels_frequency: Optional[torch.Tensor] = None,
+    ):
         super(NatPnModel, self).__init__()
 
         aux_model = MODEL_DICT[backbone](dataset=dataset)
@@ -328,71 +355,78 @@ class NatPnModel(DecoupledModel):
             embeddings_dim = 2
         self.stop_grad_logp = stop_grad_logp
         self.stop_grad_embeddings = stop_grad_embeddings
-        self.classifier = CategoricalOutput(dim=embeddings_dim, num_classes=n_classes)
+        self.classifier = CategoricalOutput(
+            dim=embeddings_dim, num_classes=n_classes)
         self.scaler = EvidenceScaler(dim=embeddings_dim, budget="normal")
-        self.flow = initialize_radial_flow(input_dim=embeddings_dim, n_transforms=30)
-        # self.flow = initialize_realnvp_flow(input_dim=embeddings_dim, n_transforms=5, )
+        self.register_buffer('labels', labels if labels is not None else None)
+        self.register_buffer('labels_frequency', labels_frequency if labels_frequency is not None else None)
+        self.flow = nn.ModuleList(
+            [initialize_radial_flow(input_dim=embeddings_dim, n_transforms=30) for _ in range(n_classes)])
 
     def need_all_features(self):
         return
 
-    def train_forward(self, x: torch.Tensor, clamp: bool = True) -> tuple[Posterior, torch.Tensor, torch.Tensor]:
+    def train_forward(
+        self,
+            x: torch.Tensor,
+            labels: Optional[torch.Tensor] = None,
+            clamp: bool = True
+    ) -> tuple[Posterior, torch.Tensor, torch.Tensor]:
 
         if self.base is not None:
             local_embeddings = self.base(x)
         else:
             local_embeddings = x
 
-        if self.stop_grad_embeddings:
-            log_prob = process_flow_batch(local_flow=self.flow,
-                                        batch_embeddings=local_embeddings.detach())
-            
-            # for p in self.flow.parameters():
-            #     p.requires_grad_(False)
-            # log_prob_for_ce = process_flow_batch(local_flow=self.flow,
-            #                             batch_embeddings=local_embeddings)
-            log_prob_for_ce = log_prob.clone()
-            log_prob_for_ce_clamped = self.scaler.forward(log_prob_for_ce,
-                                                           clamp_log_prob_value=True)
-            # for p in self.flow.parameters():
-            #     p.requires_grad_(True)
-            
+        if labels is None:
+            log_probs = marginalize_log_prob(
+                local_embeddings=local_embeddings,
+                flow=self.flow,
+                labels=self.labels,
+                labels_frequency=self.labels_frequency,
+                )
         else:
-            log_prob = process_flow_batch(local_flow=self.flow,
-                            batch_embeddings=local_embeddings)
+            log_probs = torch.zeros_like(local_embeddings[:, 0])
+            for i in self.labels:
+                # Select samples with the current label
+                label_indices = (labels == i).nonzero(as_tuple=True)[0]
+                if label_indices.nelement() > 0:
+                    embeddings_for_label = local_embeddings[label_indices]
+                    # Apply the corresponding flow
+                    if self.stop_grad_embeddings:
+                        log_prob = process_flow_batch(local_flow=self.flow[i],
+                                                      batch_embeddings=embeddings_for_label.detach())
 
-        log_prob_processed = self.scaler.forward(log_prob, clamp_log_prob_value=True)
+                    else:
+                        log_prob = process_flow_batch(local_flow=self.flow[i],
+                                                      batch_embeddings=embeddings_for_label)
+                    # Assign the transformed values to the output tensor
+                    log_probs[label_indices] = log_prob
+
+        if not clamp:
+            log_prob_not_clamped = log_probs.clone()
+        log_prob_processed = self.scaler.forward(
+            log_probs, clamp_log_prob_value=True)
 
         prediction = self.classifier(local_embeddings)
         sufficient_statistics = prediction.expected_sufficient_statistics()
 
         if self.stop_grad_logp:
-            if self.stop_grad_embeddings:
-                update = D.PosteriorUpdate(sufficient_statistics=sufficient_statistics,
-                        log_evidence=log_prob_for_ce_clamped)
-            else:
-                update = D.PosteriorUpdate(sufficient_statistics=sufficient_statistics,
-                                        log_evidence=log_prob_processed.detach())
+            update = D.PosteriorUpdate(sufficient_statistics=sufficient_statistics,
+                                       log_evidence=log_prob_processed.detach())
         else:
             update = D.PosteriorUpdate(sufficient_statistics=sufficient_statistics,
-                        log_evidence=log_prob_processed)
+                                       log_evidence=log_prob_processed)
 
         y_pred = self.classifier.prior.update(update)
 
         if not clamp:
-            log_prob_processed = process_flow_batch(local_flow=self.flow,
-                                        batch_embeddings=local_embeddings.detach())
+            log_prob_processed = log_prob_not_clamped
 
         return y_pred, log_prob_processed, local_embeddings
 
     def forward(self, x):
         return self.train_forward(x)[0].alpha.log()
-
-    # def forward(self, x: torch.Tensor):
-    #     out = self.classifier(F.relu(self.base(x)))
-    #     if self.need_all_features_flag:
-    #         self.all_features = []
-    #     return out
 
     def get_all_features(self, x, detach=True):
         if x.shape[1] == 1:

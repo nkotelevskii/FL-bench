@@ -29,6 +29,7 @@ class FedAvgClient:
             "cuda" if self.args.client_cuda and torch.cuda.is_available() else "cpu"
         )
         self.client_id: int = None
+        self.is_federated_stage = True
 
         # load dataset and clients' data indices
         try:
@@ -82,12 +83,12 @@ class FedAvgClient:
             for key, param in self.model.state_dict(keep_vars=True).items()
             if not param.requires_grad
         }
-        self.reset_optimizers()
+        self.reset_optimizers("Adam") # SGD
         
 
-    def reset_optimizers(self, ):
+    def reset_optimizers(self, name):
         self.opt_state_dict = {}
-        self.optimizer = Adam(
+        self.optimizer = getattr(torch.optim, name)(
             trainable_params(self.model),
             self.local_lr,
             # self.args.momentum,
@@ -170,6 +171,10 @@ class FedAvgClient:
     ) -> Tuple[List[torch.nn.Parameter], int, Dict]:
         self.client_id = client_id
         self.load_dataset()
+        labels, counts = torch.unique(self.trainset.dataset.targets[self.trainset.indices], return_counts=True)
+        self.model.labels = labels
+        self.model.labels_frequency = counts / counts.sum()
+
         self.set_parameters(new_parameters)
         if not train_base_model:
             for p in self.model.base.parameters():
@@ -194,7 +199,7 @@ class FedAvgClient:
     def fit(self):
         self.model.train()
         for _ in range(self.local_epoch):
-            for x, y in self.trainloader:
+            for batch_num, (x, y) in enumerate(self.trainloader):
                 # When the current batch size is 1, the batchNorm2d modules in the model would raise error.
                 # So the latent size 1 data batches are discarded.
                 if len(x) <= 1:
@@ -202,7 +207,7 @@ class FedAvgClient:
 
                 x, y = x.to(self.device), y.to(self.device)
                 if isinstance(self.criterion, BayesianLoss) or isinstance(self.criterion, LogMarginalLoss):
-                    y_pred, log_prob, embeddings = self.model.train_forward(x)
+                    y_pred, log_prob, embeddings = self.model.train_forward(x, labels=y)
                     loss = self.criterion(y_pred, y, log_prob, embeddings)
                     
                 else:
@@ -211,6 +216,9 @@ class FedAvgClient:
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
+
+                if batch_num > 10 and self.is_federated_stage:
+                    break
 
     @torch.no_grad()
     def evaluate(self, model: torch.nn.Module = None) -> Dict[str, Dict[str, float]]:
@@ -265,6 +273,9 @@ class FedAvgClient:
     ):
         self.client_id = client_id
         self.load_dataset()
+        labels, counts = torch.unique(self.trainset.dataset.targets[self.trainset.indices], return_counts=True)
+        self.model.labels = labels
+        self.model.labels_frequency = counts / counts.sum()
         self.set_parameters(new_parameters)
 
         before = {

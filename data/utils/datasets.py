@@ -69,7 +69,7 @@ def generate_toy_noisy(args):
         [0., 0.],
     ], dtype=np.float32)
     for i, center in enumerate(centers):
-        N = 5000 #if i != 2 else args.toy_noisy_classes * 100
+        N = 20000 # if i != 2 else 5000 + int(1000 * (1 + args.toy_noisy_classes / 200))
         print(N)
         samples = make_blobs(
             n_samples=N, centers=center.reshape(1, -1), cluster_std=0.1,)

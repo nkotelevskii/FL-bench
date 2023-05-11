@@ -63,11 +63,12 @@ def get_fedavg_argparser() -> ArgumentParser:
     parser.add_argument("--loss_embeddings_weight", type=float, default=1.0) # 1.0
     parser.add_argument("--stop_grad_logp", type=str2bool, default=True)
     parser.add_argument("--stop_grad_embeddings", type=str2bool, default=True)
-    parser.add_argument("--finetune_in_the_end", type=int, default=10) # 50
+    parser.add_argument("--finetune_in_the_end", type=int, default=0) # 50
+    parser.add_argument("--save_prefix", type=str, default='centralized') # 50
 
     parser.add_argument("-jr", "--join_ratio", type=float, default=1.0) # default 0.1 (participation rate)
     parser.add_argument("-ge", "--global_epoch", type=int, default=1) # default 100
-    parser.add_argument("-le", "--local_epoch", type=int, default=1) # default 5
+    parser.add_argument("-le", "--local_epoch", type=int, default=100) # default 5
     parser.add_argument("-fe", "--finetune_epoch", type=int, default=0)
     parser.add_argument("-tg", "--test_gap", type=int, default=100)
     parser.add_argument("-ee", "--eval_test", type=int, default=1)
