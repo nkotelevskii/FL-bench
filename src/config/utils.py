@@ -1,6 +1,6 @@
 import os
 from collections import OrderedDict
-from typing import List, Tuple, Union
+from typing import List, Tuple, Union, Optional
 
 import torch
 import random
@@ -16,14 +16,28 @@ from src.config.uncertainty_metrics import (
     expected_pairwise_kullback_leibler,
     load_dataloaders,
     load_dataset,
-    load_model
+    load_model,
+    choose_threshold,
 )
 from copy import deepcopy
 import math
+import csv
+from tqdm.auto import tqdm
 
 _PROJECT_DIR = Path(__file__).parent.parent.parent.abspath()
 OUT_DIR = _PROJECT_DIR / "out"
 TEMP_DIR = _PROJECT_DIR / "temp"
+
+
+quantiles = {
+    'mnist': 1 - 0.1,
+    'fmnist': 1 - 0.3,
+    'medmnistA': 1 - 0.4,
+    'medmnistC': 1 - 0.4,
+    'medmnistS': 1 - 0.4,
+    'cifar10': 1 - 0.4,
+    'svhn': 1 - 0.2,
+}
 
 
 def fix_random_seed(seed: int) -> None:
@@ -56,6 +70,7 @@ def clone_params(
                 for name, param in src.state_dict(keep_vars=True).items()
             }
         )
+
 
 
 def trainable_params(
@@ -111,7 +126,7 @@ def evaluate_accuracy(
     model: torch.nn.Module,
     dataloader: DataLoader,
     device=torch.device("cpu"),
-) -> Tuple[float, float, int]:
+) -> Tuple[float, float]:
     model.eval()
     correct = 0
     sample_num = 0
@@ -140,19 +155,27 @@ def evaluate_switch(
     threshold: float,
     uncertainty_measure: str,
     device=torch.device("cpu"),
+    return_predictions: bool = False
 ) -> tuple[float, float, int]:
     local_model.eval()
     global_model.eval()
     correct_local = 0
     correct_global = 0
     correct_decision = 0
-
+    if return_predictions:
+        local_predictions = []
+        global_predictions = []
+        switch_predictions = []
+        true_labels = []
+        uncertainty_scores_local = []
+        uncertainty_scores_global = []
     sample_num = 0
     for x, y in dataloader:
         x, y = x.to(device), y.to(device)
 
-        y_pred_local, log_prob_local, _ = local_model.train_forward(x, clamp=False)
-        y_pred_global, _, _ = global_model.train_forward(x, clamp=False)
+        y_pred_local, log_prob_local, _ = local_model.train_forward(
+            x, clamp=False)
+        y_pred_global, log_prob_global, _ = global_model.train_forward(x, clamp=False)
 
         alpha_local = y_pred_local.alpha
         alpha_global = y_pred_global.alpha
@@ -161,29 +184,38 @@ def evaluate_switch(
 
         if uncertainty_measure == 'mi':
             local_measure = mutual_information(alpha=alpha_local.cpu().numpy())
+            global_measure = mutual_information(alpha=alpha_global.cpu().numpy())
         elif uncertainty_measure == 'rmi':
             local_measure = reverse_mutual_information(
                 alpha=alpha_local.cpu().numpy())
+            global_measure = reverse_mutual_information(
+                alpha=alpha_global.cpu().numpy())
         elif uncertainty_measure == 'epkl':
             local_measure = expected_pairwise_kullback_leibler(
                 alpha=alpha_local.cpu().numpy())
+            global_measure = expected_pairwise_kullback_leibler(
+                alpha=alpha_global.cpu().numpy())
         elif uncertainty_measure == 'entropy':
             local_measure = y_pred_local.entropy().cpu().numpy()
+            global_measure = y_pred_global.entropy().cpu().numpy()
         elif uncertainty_measure == 'log_prob':
             local_measure = log_prob_local.cpu().numpy()
+            global_measure = log_prob_global.cpu().numpy()
         elif uncertainty_measure == 'categorical_entropy':
             local_measure = expected_entropy(alpha=alpha_local.cpu().numpy())
+            global_measure = expected_entropy(alpha=alpha_global.cpu().numpy())
         else:
             raise ValueError(
                 f'No such uncertainty measure available! {uncertainty_measure}')
 
-        local_measure = torch.tensor(local_measure, device=device) * torch.ones_like(alpha_local[:, 0])
+        local_measure = torch.tensor(
+            local_measure, device=device) * torch.ones_like(alpha_local[:, 0])
         if uncertainty_measure != 'log_prob':
             alphas_after_decision = torch.where((local_measure < threshold_torch)[..., None],
                                                 alpha_local, alpha_global)
         else:
             alphas_after_decision = torch.where((local_measure > threshold_torch)[..., None],
-                                    alpha_local, alpha_global)
+                                                alpha_local, alpha_global)
 
         pred_local = torch.argmax(alpha_local, -1)
         pred_global = torch.argmax(alpha_global, -1)
@@ -193,8 +225,19 @@ def evaluate_switch(
         correct_global += (pred_global == y).sum().item()
         correct_decision += (pred_after_decision == y).sum().item()
 
+        if return_predictions:
+            switch_predictions.append(pred_after_decision.cpu())
+            global_predictions.append(pred_global.cpu())
+            local_predictions.append(pred_local.cpu())
+            true_labels.append(y.cpu())
+            uncertainty_scores_local.append(local_measure.cpu())
+            uncertainty_scores_global.append(global_measure)
+
         sample_num += len(y)
-    return correct_decision, correct_local, correct_global, sample_num
+    if return_predictions:
+        return correct_decision, correct_local, correct_global, sample_num, local_predictions, global_predictions, switch_predictions, true_labels, uncertainty_scores_local, uncertainty_scores_global
+    else:
+        return correct_decision, correct_local, correct_global, sample_num
 
 
 @torch.no_grad()
@@ -210,6 +253,7 @@ def validate_accuracy_per_client(
     data_indices, trainset, testset = load_dataset(dataset_name=dataset_name)
     for index in ['global'] + [i for i in range(len(data_indices))]:
         print("model index is: ", index)
+        current_accuracies_list = []
 
         current_model = load_model(
             dataset_name=dataset_name,
@@ -218,6 +262,8 @@ def validate_accuracy_per_client(
             index=index,
             all_params_dict=all_params_dict,
         )
+        current_model.eval()
+        current_model.to(device)
 
         for dataset_index in range(len(data_indices)):
             _, testloader, _ = load_dataloaders(
@@ -226,7 +272,8 @@ def validate_accuracy_per_client(
             test_loss, test_correct, test_sample_num = evaluate(
                 model=current_model,
                 dataloader=testloader,
-                criterion=criterion
+                criterion=criterion,
+                device=device,
             )
             if isinstance(current_model, NatPnModel) and validate_only_classifier:
                 correct, overall = evaluate_only_classifier(
@@ -235,6 +282,9 @@ def validate_accuracy_per_client(
                     f"{dataset_index}: {test_correct / test_sample_num} \t Accuracy only classifier: {correct.sum() / overall}")
             else:
                 print(f"{dataset_index}: {test_correct / test_sample_num}")
+            current_accuracies_list.append(test_correct / test_sample_num)
+        print(
+            f"mean accuracy of {index} is {np.mean(current_accuracies_list)} +/- {np.std(current_accuracies_list)}")
 
 
 @torch.no_grad()
@@ -266,3 +316,143 @@ def reset_flow_and_classifier_params(state_dict: OrderedDict):
             new_state_dict[k] = torch.nn.Parameter(torch.nn.init.kaiming_uniform(
                 new_state_dict[k][None], a=math.sqrt(5))[0])
     return new_state_dict
+
+
+def update_csv(filename, row_data):
+    # Check if file exists
+    try:
+        with open(filename, 'x', newline='') as file:
+            writer = csv.writer(file)
+            # Write the headers to the CSV file
+            writer.writerow([
+                'dataset_name',
+                'model_id',
+                'dataset_id',
+                'class_intersect_len',
+                'centralized_model_acc',
+                'local_model_acc',
+                'global_model_acc',
+                'switch_model_acc_mi',
+                'switch_model_acc_rmi',
+                'switch_model_acc_epkl',
+                'switch_model_acc_entropy',
+                'switch_model_acc_logprob',
+                'switch_model_acc_catentropy',
+            ])
+    except FileExistsError:
+        pass
+
+    # Append new row to the CSV file
+    with open(filename, 'a', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(row_data)
+
+
+@torch.no_grad()
+def make_inference_csv(
+    dataset_name: str,
+    path_to_saved_models: str,
+    device: str,
+    ALPHA_THRESHOLD: float = 0.95,
+    path_to_centralized_model: Optional[str] = None,
+):
+    all_params_dict = torch.load(path_to_saved_models)
+    backbone = 'res18' if dataset_name in ['cifar10', 'svhn'] else 'lenet5'
+
+    if path_to_centralized_model is not None:
+        centralized_dict = torch.load(path_to_centralized_model)
+        centralized_model = load_model(
+            dataset_name=dataset_name,
+            backbone=backbone,
+            stopgrad=True,
+            index="global",
+            all_params_dict=centralized_dict,
+        )
+        centralized_model.stop_grad_embeddings = False
+        centralized_model.to(device)
+        centralized_model.eval()
+    else:
+        centralized_model = None
+
+    global_model = load_model(
+        dataset_name=dataset_name,
+        backbone=backbone,
+        stopgrad=True,
+        index="global",
+        all_params_dict=all_params_dict,
+    )
+    global_model.stop_grad_embeddings = False
+    global_model.to(device)
+    global_model.eval()
+
+    data_indices, trainset, testset = load_dataset(dataset_name=dataset_name)
+
+    for model_id in tqdm(range(len(all_params_dict) - 1)):
+        print("model index is: ", model_id)
+
+        ind_labels = all_params_dict[model_id]['labels'].numpy()
+        current_model = load_model(
+            dataset_name=dataset_name,
+            backbone=backbone,
+            stopgrad=True,
+            index=model_id,
+            all_params_dict=all_params_dict,
+        )
+        current_model.stop_grad_embeddings = False
+        current_model.to(device)
+        current_model.eval()
+
+        _, _, calloader = load_dataloaders(
+            client_id=model_id, data_indices=data_indices, trainset=trainset, testset=testset
+        )
+
+        threshold_dict, _ = choose_threshold(
+            model=current_model,
+            calloader=calloader,
+            device=device,
+            alpha=ALPHA_THRESHOLD,
+        )
+
+        for dataset_id in range(len(all_params_dict) - 1):
+            _, testloader, _ = load_dataloaders(
+                client_id=dataset_id, data_indices=data_indices, trainset=trainset, testset=testset)
+            other_labels = all_params_dict[dataset_id]['labels'].numpy(
+            ).tolist()
+            intersection_len = len(
+                set(ind_labels).intersection(set(other_labels)))
+
+            accuracies_of_different_uncertainties = []
+            for uncertainty_measure, threshold in threshold_dict.items():
+                correct_decision, correct_local, correct_global, sample_num = evaluate_switch(
+                    local_model=current_model,
+                    global_model=global_model,
+                    dataloader=testloader,
+                    threshold=threshold,
+                    uncertainty_measure=uncertainty_measure,
+                    device=device,
+                )
+                if centralized_model is not None:
+                    centralized_acc, _ = evaluate_accuracy(
+                        model=centralized_model,
+                        dataloader=testloader,
+                        device=device
+                    )
+                else:
+                    centralized_acc = None
+
+                global_accuracy = correct_global / sample_num
+                local_model_accuracy = correct_local / sample_num
+                accuracies_of_different_uncertainties.extend(
+                    [correct_decision / sample_num])
+
+            new_row = [
+                dataset_name,
+                model_id,
+                dataset_id,
+                intersection_len,
+                centralized_acc,
+                local_model_accuracy,
+                global_accuracy,
+                *accuracies_of_different_uncertainties
+            ]  # replace with your function call
+            update_csv(f'{dataset_name}.csv', new_row)

@@ -326,6 +326,80 @@ class MNIST(BaseDataset):
         self.target_transform = target_transform
 
 
+class NoisyMNIST(BaseDataset):
+    def __init__(self, root, args=None, transform=None, target_transform=None):
+        super().__init__()
+        train_part = torchvision.datasets.MNIST(
+            root, True, transform, target_transform, download=True
+        )
+        test_part = torchvision.datasets.MNIST(
+            root, False, transform, target_transform)
+        train_data = torch.Tensor(train_part.data).float().unsqueeze(1)
+        test_data = torch.Tensor(test_part.data).float().unsqueeze(1)
+        train_targets = torch.Tensor(train_part.targets).long().squeeze()
+        test_targets = torch.Tensor(test_part.targets).long().squeeze()
+
+        # Apply label noise for specific classes
+        noisy_classes = [5, 6, 7, 8, 9]  # Classes to introduce label noise
+        noisy_indices = torch.tensor([
+            i for i in range(len(train_targets)) if train_targets[i] in noisy_classes
+        ])
+        noisy_targets = torch.randint(min(noisy_classes), max(noisy_classes) + 1, size=noisy_indices.size())
+        train_targets[noisy_indices] = noisy_targets
+
+        # Apply label noise for specific classes
+        noisy_indices = torch.tensor([
+            i for i in range(len(test_targets)) if test_targets[i] in noisy_classes
+        ])
+        noisy_targets = torch.randint(min(noisy_classes), max(noisy_classes) + 1, size=noisy_indices.size())
+        test_targets[noisy_indices] = noisy_targets
+
+
+        self.data = torch.cat([train_data, test_data])
+        self.targets = torch.cat([train_targets, test_targets])
+        self.classes = train_part.classes
+        self.transform = transform
+        self.target_transform = target_transform
+
+
+class NoisyCIFAR100(BaseDataset):
+    def __init__(self, root, args=None, transform=None, target_transform=None):
+        super().__init__()
+        train_part = torchvision.datasets.CIFAR100(
+            root, True, transform, target_transform, download=True
+        )
+        test_part = torchvision.datasets.CIFAR100(
+            root, False, transform, target_transform)
+        train_data = torch.Tensor(
+            train_part.data).permute([0, -1, 1, 2]).float()
+        test_data = torch.Tensor(test_part.data).permute([0, -1, 1, 2]).float()
+        train_targets = torch.Tensor(train_part.targets).long().squeeze()
+        test_targets = torch.Tensor(test_part.targets).long().squeeze()
+
+        # Apply label noise for specific classes
+        noisy_classes = [i for i in range(10, 100)]  # Classes to introduce label noise
+        noisy_indices = torch.tensor([
+            i for i in range(len(train_targets)) if train_targets[i] in noisy_classes
+        ])
+        noisy_targets = torch.randint(min(noisy_classes), max(noisy_classes) + 1, size=noisy_indices.size())
+        train_targets[noisy_indices] = noisy_targets
+
+        # Apply label noise for specific classes
+        noisy_indices = torch.tensor([
+            i for i in range(len(test_targets)) if test_targets[i] in noisy_classes
+        ])
+        noisy_targets = torch.randint(min(noisy_classes), max(noisy_classes) + 1, size=noisy_indices.size())
+        test_targets[noisy_indices] = noisy_targets
+
+
+        self.data = torch.cat([train_data, test_data])
+        self.targets = torch.cat([train_targets, test_targets])
+        self.classes = train_part.classes
+        self.transform = transform
+        self.target_transform = target_transform
+        
+
+
 class FashionMNIST(BaseDataset):
     def __init__(self, root, args=None, transform=None, target_transform=None):
         super().__init__()
@@ -372,8 +446,8 @@ class EMNIST(BaseDataset):
 class CIFAR10(BaseDataset):
     def __init__(self, root, args=None, transform=None, target_transform=None):
         super().__init__()
-        train_part = torchvision.datasets.CIFAR10(root, True, download=True)
-        test_part = torchvision.datasets.CIFAR10(root, False, download=True)
+        train_part = torchvision.datasets.CIFAR10(root, True, download=False) # True
+        test_part = torchvision.datasets.CIFAR10(root, False, download=False) # True
         train_data = torch.Tensor(
             train_part.data).permute([0, -1, 1, 2]).float()
         test_data = torch.Tensor(test_part.data).permute([0, -1, 1, 2]).float()
@@ -562,4 +636,6 @@ DATASETS = {
     "cinic10": CINIC10,
     "toy_circle": ToyCircle,
     "toy_noisy": ToyNoisy,
+    "noisy_mnist": NoisyMNIST,
+    "noisy_cifar100": NoisyCIFAR100,
 }

@@ -442,3 +442,71 @@ def generate_synthetic_data(args):
     partition["data_indices"] = data_indices
 
     return partition, stats
+
+
+def generate_samples(std_dev, side_length, num_points):
+    # Compute the coordinates of the vertices of the equilateral triangle
+    vertex1 = np.array([-side_length/2, 0])
+    vertex2 = np.array([side_length/2, 0])
+    vertex3 = np.array([0, side_length * np.sqrt(3) / 2])
+    center = (vertex1 + vertex2 + vertex3) / 3
+
+    # Generate samples from the Gaussian distributions
+    samples = {}
+    samples[0] = np.random.normal(
+        loc=center, scale=std_dev, size=(3 * num_points, 2))
+    samples[1] = np.random.normal(
+        loc=vertex1, scale=std_dev, size=(num_points, 2))
+    samples[2] = np.random.normal(
+        loc=vertex2, scale=std_dev, size=(num_points, 2))
+    samples[3] = np.random.normal(
+        loc=vertex3, scale=std_dev, size=(num_points, 2))
+
+    # Assign labels to the samples
+    labels = {}
+    labels[0] = np.random.randint(low=0, high=3, size=3 * num_points)
+    labels[1] = np.zeros(num_points, dtype=int)
+    labels[2] = np.ones(num_points, dtype=int)
+    labels[3] = 2 * np.ones(num_points, dtype=int)
+
+    return samples, labels
+
+
+def generate_toy_aleatoric_data(args):
+
+    samples, labels = generate_samples(
+        args.toy_aleatoric_std_dev,
+        args.toy_aleatoric_side,
+        args.toy_aleatoric_num_points,
+    )
+    cumsum = np.cumsum([len(d) for d in samples.values()])
+
+    partition = {"separation": None, "data_indices": None}
+
+    np.save(_DATA_ROOT / "toy_aleatoric" / "data",
+            np.concatenate([d for d in samples.values()]))
+    np.save(_DATA_ROOT / "toy_aleatoric" / "targets",
+            np.concatenate([d for d in labels.values()]))
+
+    # num_samples = np.array(
+    #     list(map(lambda stat_i: stat_i["x"], stats.values())))
+    # stats["sample per client"] = {
+    #     "std": num_samples.mean(),
+    #     "stddev": num_samples.std(),
+    # }
+
+    partition["data_indices"] = [
+        {
+            "train": [j for j in range(i * args.toy_aleatoric_num_points, (i + 1) * args.toy_aleatoric_num_points) if j % 10 != 0] + [j for j in range(cumsum[i + 1], cumsum[i + 1] + args.toy_aleatoric_num_points) if j % 10 != 0],
+            "test": [j for j in range(i * args.toy_aleatoric_num_points, (i + 1) * args.toy_aleatoric_num_points) if j % 10 == 0] + [j for j in range(cumsum[i + 1], cumsum[i + 1] + args.toy_aleatoric_num_points) if j % 10 == 0]
+        } for i in range(3)
+    ]
+
+    partition["separation"] = {
+        "train": [i for i in range(3)],
+        "test": [i for i in range(3)],
+        "total": 3,
+    }
+    stats = {}
+
+    return partition, stats

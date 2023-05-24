@@ -10,7 +10,7 @@ from path import Path
 
 from datasets import DATASETS
 from partition import dirichlet, iid_partition, randomly_assign_classes, allocate_shards
-from util import prune_args, generate_synthetic_data, process_celeba, process_femnist
+from util import prune_args, generate_synthetic_data, process_celeba, process_femnist, generate_toy_aleatoric_data
 
 _CURRENT_DIR = Path(__file__).parent.abspath()
 
@@ -33,6 +33,8 @@ def main(args):
         partition, stats = process_celeba(args)
     elif args.dataset == "synthetic":
         partition, stats = generate_synthetic_data(args)
+    elif args.dataset == "toy_aleatoric":
+        partition, stats = generate_toy_aleatoric_data(args)
     else:  # MEDMNIST, COVID, MNIST, CIFAR10, ...
         ori_dataset = DATASETS[args.dataset](dataset_root, args)
 
@@ -82,7 +84,7 @@ def main(args):
             "total": args.client_num_in_total,
         }
 
-    if args.dataset not in ["femnist", "celeba"]:
+    if args.dataset not in ["femnist", "celeba", "toy_aleatoric"]:
         for client_id, idx in enumerate(partition["data_indices"]):
             if args.split == "sample":
                 num_train_samples = int(len(idx) * args.fraction)
@@ -133,6 +135,9 @@ if __name__ == "__main__":
             "cinic10",
             "toy_circle",
             "toy_noisy",
+            "toy_aleatoric",
+            "noisy_mnist",
+            "noisy_cifar100",
         ],
         default="cifar10",
     )
@@ -147,6 +152,10 @@ if __name__ == "__main__":
     parser.add_argument("-c", "--classes", type=int, default=0)
     # For toy noisy only
     parser.add_argument("--toy_noisy_classes", type=int, default=0)
+
+    parser.add_argument("--toy_aleatoric_side", type=float, default=10)
+    parser.add_argument("--toy_aleatoric_num_points", type=int, default=1000)
+    parser.add_argument("--toy_aleatoric_std_dev", type=float, default=0.5)
     # For allocate shards only
     parser.add_argument("-s", "--shards", type=int, default=0)
     # For dirichlet distribution only

@@ -131,6 +131,7 @@ class LeNet5(DecoupledModel):
         super(LeNet5, self).__init__()
         config = {
             "mnist": (1, 256, 10),
+            "noisy_mnist": (1, 256, 10),
             "medmnistS": (1, 256, 11),
             "medmnistC": (1, 256, 11),
             "medmnistA": (1, 256, 11),
@@ -142,6 +143,7 @@ class LeNet5(DecoupledModel):
             "cinic10": (3, 400, 10),
             "svhn": (3, 400, 10),
             "cifar100": (3, 400, 100),
+            "noisy_cifar100": (3, 400, 100),
             "celeba": (3, 33456, 2),
             "usps": (1, 200, 10),
             "tiny_imagenet": (3, 2704, 200),
@@ -269,6 +271,7 @@ class ResNet18(DecoupledModel):
             "cifar10": 10,
             "cinic10": 10,
             "cifar100": 100,
+            "noisy_cifar100": 100,
             "covid19": 4,
             "usps": 10,
             "celeba": 2,
@@ -325,6 +328,7 @@ def marginalize_log_prob(
     # Example: return self.embedding_layer(x)
     log_probs = torch.tensor(
         [], device=local_embeddings.device, dtype=torch.float32)
+
     for i, flow_index in enumerate(labels):
         log_prob = process_flow_batch(local_flow=flow[flow_index],
                                       batch_embeddings=local_embeddings)
@@ -358,8 +362,11 @@ class NatPnModel(DecoupledModel):
         self.classifier = CategoricalOutput(
             dim=embeddings_dim, num_classes=n_classes)
         self.scaler = EvidenceScaler(dim=embeddings_dim, budget="normal")
-        self.register_buffer('labels', labels if labels is not None else None)
-        self.register_buffer('labels_frequency', labels_frequency if labels_frequency is not None else None)
+        self.register_buffer('labels',
+                              labels if labels is not None else None)
+        self.register_buffer('labels_frequency',
+                              labels_frequency if labels_frequency is not None else None)
+        
         self.flow = nn.ModuleList(
             [initialize_radial_flow(input_dim=embeddings_dim, n_transforms=30) for _ in range(n_classes)])
 
@@ -393,18 +400,97 @@ class NatPnModel(DecoupledModel):
                 if label_indices.nelement() > 0:
                     embeddings_for_label = local_embeddings[label_indices]
                     # Apply the corresponding flow
-                    if self.stop_grad_embeddings:
-                        log_prob = process_flow_batch(local_flow=self.flow[i],
-                                                      batch_embeddings=embeddings_for_label.detach())
-
-                    else:
-                        log_prob = process_flow_batch(local_flow=self.flow[i],
-                                                      batch_embeddings=embeddings_for_label)
+                    log_prob = process_flow_batch(local_flow=self.flow[i],
+                                                  batch_embeddings=embeddings_for_label)
                     # Assign the transformed values to the output tensor
                     log_probs[label_indices] = log_prob
 
         if not clamp:
-            log_prob_not_clamped = log_probs.clone()
+            log_prob_not_clamped = self.scaler.forward(
+                log_probs.clone(), clamp_log_prob_value=False)
+            
+        log_prob_processed = self.scaler.forward(
+            log_probs, clamp_log_prob_value=True)
+
+        prediction = self.classifier(local_embeddings)
+        sufficient_statistics = prediction.expected_sufficient_statistics()
+
+        if self.stop_grad_logp:
+            update = D.PosteriorUpdate(sufficient_statistics=sufficient_statistics,
+                                       log_evidence=log_prob_processed.detach())
+        else:
+            update = D.PosteriorUpdate(sufficient_statistics=sufficient_statistics,
+                                       log_evidence=log_prob_processed)
+
+        y_pred = self.classifier.prior.update(update)
+
+        if not clamp:
+            log_prob_processed = log_prob_not_clamped
+
+        return y_pred, log_prob_processed, local_embeddings
+
+    def forward(self, x):
+        return self.train_forward(x)[0].alpha.log()
+
+    def get_all_features(self, x, detach=True):
+        if x.shape[1] == 1:
+            x = torch.expand_copy(x, (x.shape[0], 3, *x.shape[2:]))
+        return super().get_all_features(x, detach)
+
+    def get_final_features(self, x, detach=True):
+        if x.shape[1] == 1:
+            x = torch.expand_copy(x, (x.shape[0], 3, *x.shape[2:]))
+        return super().get_final_features(x, detach)
+
+
+
+class NatPnModelVanilla(DecoupledModel):
+    def __init__(
+        self, dataset,
+            backbone: str,
+            stop_grad_logp: bool,
+            stop_grad_embeddings: bool,
+    ):
+        super(NatPnModelVanilla, self).__init__()
+
+        aux_model = MODEL_DICT[backbone](dataset=dataset)
+        embeddings_dim = aux_model.classifier.in_features
+        n_classes = aux_model.classifier.out_features
+        if backbone != '2nn':
+            self.base = deepcopy(aux_model.base)
+        else:
+            self.base = nn.Identity()
+            embeddings_dim = 2
+        self.stop_grad_logp = stop_grad_logp
+        self.stop_grad_embeddings = stop_grad_embeddings
+        self.classifier = CategoricalOutput(
+            dim=embeddings_dim, num_classes=n_classes)
+        self.scaler = EvidenceScaler(dim=embeddings_dim, budget="normal")
+        
+        self.flow = initialize_radial_flow(input_dim=embeddings_dim, n_transforms=30)
+
+    def need_all_features(self):
+        return
+
+    def train_forward(
+        self,
+            x: torch.Tensor,
+            labels: Optional[torch.Tensor] = None,
+            clamp: bool = True
+    ) -> tuple[Posterior, torch.Tensor, torch.Tensor]:
+
+        if self.base is not None:
+            local_embeddings = self.base(x)
+        else:
+            local_embeddings = x
+
+        log_probs = process_flow_batch(local_flow=self.flow,
+                                                  batch_embeddings=local_embeddings)
+
+        if not clamp:
+            log_prob_not_clamped = self.scaler.forward(
+                log_probs.clone(), clamp_log_prob_value=False)
+            
         log_prob_processed = self.scaler.forward(
             log_probs, clamp_log_prob_value=True)
 
@@ -447,4 +533,5 @@ MODEL_DICT: Dict[str, Type[DecoupledModel]] = {
     "res18": ResNet18,
     "alex": AlexNet,
     "natpn": NatPnModel,
+    "natpn_vanilla": NatPnModelVanilla,
 }

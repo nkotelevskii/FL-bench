@@ -10,6 +10,8 @@ from typing import Dict, List, Optional
 from tqdm.auto import tqdm
 import numpy as np
 
+import optuna
+
 import torch
 from path import Path
 from rich.console import Console
@@ -34,7 +36,8 @@ class FedAvgServer:
         args: Namespace = None,
         unique_model=False,
         default_trainer=True,
-        optimizer_name: Optional[str]="Adam"
+        trial: Optional[optuna.Trial]=None,
+        optimizer_name: Optional[str]=None
     ):
         if optimizer_name is None:
             self.optimizer_name = "Adam"
@@ -42,6 +45,7 @@ class FedAvgServer:
             self.optimizer_name = optimizer_name
         self.args = get_fedavg_argparser().parse_args() if args is None else args
         self.algo = algo
+        self.trial = trial
         self.unique_model = unique_model
         fix_random_seed(self.args.seed)
         with open(_PROJECT_DIR / "data" / self.args.dataset / "args.json", "r") as f:
@@ -127,7 +131,7 @@ class FedAvgServer:
                 deepcopy(self.model), self.args, self.logger, optimizer_name=self.optimizer_name)
 
     def reinitialize_model(self,):
-        if self.args.model == "natpn" or self.args.model == "natpnvanilla":
+        if self.args.model == "natpn":
             if self.args.dataset == "toy_noisy":
                 dataset = self.args.dataset + \
                     f"_{self.args.dataset_args['toy_noisy_classes']}"
@@ -135,10 +139,10 @@ class FedAvgServer:
                 dataset = self.args.dataset
             self.dataset_name = dataset
 
-            self.model = MODEL_DICT[self.args.model](self.dataset_name,
-                                                     self.args.nat_pn_backbone,
-                                                     self.args.stop_grad_logp,
-                                                     self.args.stop_grad_embeddings
+            self.model = MODEL_DICT[self.args.model](dataset=self.dataset_name,
+                                                     backbone=self.args.nat_pn_backbone,
+                                                     stop_grad_logp=self.args.stop_grad_logp,
+                                                     stop_grad_embeddings=self.args.stop_grad_embeddings,
                                                      ).to(self.device)
         else:
             self.model = MODEL_DICT[self.args.model](
@@ -174,43 +178,27 @@ class FedAvgServer:
                 weight_cache.append(weight)
 
             self.aggregate(delta_cache, weight_cache)
-            if self.optimizer_name == 'SGD' and self.args.momentum != 0:
-                self.aggregate_momentum()
 
-    def aggregate_momentum(self, ):
-        # Initialize a new state_dict to store the averages
-        new_state_dict = {'state': {}, 'param_groups': []}
+            if self.trial is not None and (E + 1) % 5 == 0:
+                self.trainer.set_parameters(self.global_params_dict)
 
-        # Initialize a count for the optimizers
-        n_optimizers = len(self.trainer.opt_state_dict)
+                n_classes = len(self.trainer.model.flow)
+                self.trainer.model.labels = torch.arange(n_classes)
+                self.trainer.model.labels_frequency = torch.ones(n_classes) / n_classes
 
-        # Loop over each optimizer
-        for key in self.trainer.opt_state_dict:
-            state_dict = self.trainer.opt_state_dict[key]
-            
-            # Loop over each layer
-            for layer, layer_state in state_dict['state'].items():
-                if layer not in new_state_dict['state']:
-                    # Copy the state_dict of the first optimizer
-                    new_state_dict['state'][layer] = deepcopy(layer_state)
-                else:
-                    # Add the momentum buffer of each optimizer
-                    new_state_dict['state'][layer]['momentum_buffer'] += layer_state['momentum_buffer']
-            
-            # Keep the param_groups from the first optimizer
-            if not new_state_dict['param_groups']:
-                new_state_dict['param_groups'] = state_dict['param_groups']
+                accuracies = []
+                for cl_id in range(self.client_num_in_total):
+                    self.trainer.client_id = cl_id
+                    self.trainer.load_dataset()
+                    accuracy = evaluate_accuracy(model=self.trainer.model,
+                                                  dataloader=self.trainer.testloader,
+                                                    device=self.device)[0]
+                    accuracies.append(accuracy)
+                self.trial.report(np.mean(accuracies), E)
 
-        # Average the momentum buffers
-        for layer, layer_state in new_state_dict['state'].items():
-            layer_state['momentum_buffer'] /= n_optimizers
-
-
-        for key in self.trainer.opt_state_dict:
-            state_dict = self.trainer.opt_state_dict[key]
-            for layer in state_dict['state']:
-                state_dict['state'][layer]['momentum_buffer'] = new_state_dict['state'][layer]['momentum_buffer']
-
+                # Handle pruning based on the intermediate value.
+                if self.trial.should_prune():
+                    raise optuna.TrialPruned()
 
 
     def test(self):
@@ -270,7 +258,6 @@ class FedAvgServer:
         weights = torch.tensor(
             weight_cache, device=self.device) / sum(weight_cache)
         delta_list = [list(delta.values()) for delta in delta_cache]
-        # delta_list = [list([3 * v if k.startswith('flow') else v for (k, v) in delta.items()]) for delta in delta_cache]
         aggregated_delta = [
             torch.sum(weights * torch.stack(diff, dim=-1), dim=-1)
             for diff in zip(*delta_list)
@@ -443,7 +430,7 @@ class FedAvgServer:
                                OUT_DIR / self.algo / model_name)
                 # torch.save(self.model.state_dict(), OUT_DIR / self.algo / model_name)
 
-            self.post_training_and_save(model_name)
+            # self.post_training_and_save(model_name)
 
     def post_training_and_save(self, model_name,):
         all_models_dict: dict[str | int, torch.nn.ParameterDict] = {}
@@ -494,6 +481,47 @@ class FedAvgServer:
                        f"{self.args.save_prefix}all_params{text_stopgrad_logp}{text_stopgrad_embeddings}_{model_name}")
 
 
-if __name__ == "__main__":
-    server = FedAvgServer(optimizer_name="Adam")
+def objective(trial: optuna.Trial):
+    args = get_fedavg_argparser().parse_args()
+
+    # Categorical parameter
+    args.stop_grad_logp = trial.suggest_categorical("stop_grad_logp", [True, False])
+    args.batch_size = trial.suggest_categorical("batch_size", [64, 128])
+
+    args.optimizer_name = trial.suggest_categorical("optimizer_name", ["Adam", "SGD"])
+    args.local_lr = trial.suggest_categorical("local_lr", [0.01, 0.001, 0.0001, 0.00001,])
+    args.loss_log_prob_weight = trial.suggest_categorical("loss_log_prob_weight", [0.01, 0.001, 0.0001, 0.00001,])
+    args.loss_entropy_weight = trial.suggest_categorical("loss_entropy_weight", [0.0, 0.01, 0.001, 0.0001, 0.00001,])
+
+
+    server = FedAvgServer(args=args, trial=trial)
     server.run()
+
+    labels, counts = torch.unique(server.trainer.trainset.dataset.targets[server.trainer.trainset.indices], return_counts=True)
+    server.trainer.model.labels = labels
+    server.trainer.model.labels_frequency = counts / counts.sum()
+    server.trainer.set_parameters(server.global_params_dict)
+
+    n_classes = len(server.trainer.model.flow)
+    server.trainer.model.labels = torch.arange(n_classes)
+    server.trainer.model.labels_frequency = torch.ones(n_classes) / n_classes
+
+    accuracies = []
+    for cl_id in range(server.client_num_in_total):
+        server.trainer.client_id = cl_id
+        server.trainer.load_dataset()
+        accuracy = evaluate_accuracy(model=server.trainer.model,
+                                        dataloader=server.trainer.testloader,
+                                        device=server.device)[0]
+        accuracies.append(accuracy)
+
+    return np.mean(accuracies)
+
+
+
+if __name__ == "__main__":
+    study = optuna.create_study(sampler=optuna.samplers.TPESampler(), direction='maximize')
+    study.optimize(objective, timeout=60 * 60 * 8)
+
+    print("Best value: ", study.best_value)
+    print("Best params: ", study.best_params)

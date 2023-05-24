@@ -1,7 +1,6 @@
 #!/bin/bash
 
-# n_classes_list=(3 5 10 15 20 30 40 50 75 100 150 200)
-n_classes_list=(200)
+n_classes_list=(3 5 10 15 20 30 40 50 75 100 150 200)
 random_seeds=(40 41 42 43 44)
 
 for n_classes in "${n_classes_list[@]}"; do
@@ -14,6 +13,7 @@ for n_classes in "${n_classes_list[@]}"; do
     cd ./src/server
     CUDA_VISIBLE_DEVICES=0 python fedavg.py \
     --dataset toy_noisy \
+    --model natpnvanilla \
     --nat_pn_backbone 2nn \
     --finetune_in_the_end 0 \
     --eval_test 0 \

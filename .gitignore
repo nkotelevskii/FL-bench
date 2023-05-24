@@ -6,6 +6,8 @@ __pycache__
 
 # dataset folders
 data/cifar10
+data/noisy_cifar100/
+data/noisy_mnist/
 data/cifar100
 data/mnist
 data/emnist

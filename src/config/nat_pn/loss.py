@@ -51,12 +51,10 @@ class BayesianLoss(nn.Module):
         loss = nll
         if self.log_prob_weight != 0:
             log_prob_component = -self.log_prob_weight * log_prob
-            loss += log_prob_component
+            loss = loss + log_prob_component
         if self.entropy_weight != 0:
             entropy_component = -self.entropy_weight * y_pred.entropy()
             loss += entropy_component
-        # print(f"nll {nll.mean()}")
-        # print(f"log_prob {log_prob.mean()}")
         if self.embeddings_weight != 0:
             loss += self.embeddings_weight * contrastive_loss(embeddings=embeddings, labels=y_true)
 

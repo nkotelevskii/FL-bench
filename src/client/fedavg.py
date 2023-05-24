@@ -2,7 +2,7 @@ import pickle
 from argparse import Namespace
 from collections import OrderedDict
 from copy import deepcopy
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import torch
 from path import Path
@@ -23,7 +23,7 @@ from data.utils.datasets import DATASETS
 
 
 class FedAvgClient:
-    def __init__(self, model: DecoupledModel, args: Namespace, logger: Console):
+    def __init__(self, model: DecoupledModel, args: Namespace, logger: Console, optimizer_name: Optional[str]=None):
         self.args = args
         self.device = torch.device(
             "cuda" if self.args.client_cuda and torch.cuda.is_available() else "cpu"
@@ -83,25 +83,31 @@ class FedAvgClient:
             for key, param in self.model.state_dict(keep_vars=True).items()
             if not param.requires_grad
         }
-        self.reset_optimizers("Adam") # SGD
+        self.reset_optimizers(optimizer_name) # SGD
         
 
     def reset_optimizers(self, name):
         self.opt_state_dict = {}
-        self.optimizer = getattr(torch.optim, name)(
-            trainable_params(self.model),
-            self.local_lr,
-            # self.args.momentum,
-            # self.args.weight_decay,
-        )
+        if name == "Adam":
+            self.optimizer = getattr(torch.optim, name)(
+                trainable_params(self.model),
+                0.001,
+            )
+        else:
+            self.optimizer = getattr(torch.optim, name)(
+                trainable_params(self.model),
+                self.local_lr,
+                self.args.momentum,
+                self.args.weight_decay,
+            )
         # self.scheduler = MultiStepLR(optimizer=self.optimizer,
         #                               milestones=np.linspace(0, self.args.global_epoch, 5), gamma=0.5)
 
     def load_dataset(self):
         self.trainset.indices = self.data_indices[self.client_id]["train"]
         self.testset.indices = self.data_indices[self.client_id]["test"]
-        self.trainloader = DataLoader(self.trainset, self.args.batch_size)
-        self.testloader = DataLoader(self.testset, self.args.batch_size)
+        self.trainloader = DataLoader(self.trainset, self.args.batch_size, shuffle=True,)
+        self.testloader = DataLoader(self.testset, self.args.batch_size, shuffle=False,)
 
     def train_and_log(self, verbose=False) -> Dict[str, Dict[str, float]]:
         before = {
@@ -113,11 +119,11 @@ class FedAvgClient:
             "test_size": 1,
         }
         after = deepcopy(before)
-        before = self.evaluate()
+        # before = self.evaluate()
         if self.local_epoch > 0:
             self.fit()
             self.save_state()
-            after = self.evaluate()
+            # after = self.evaluate()
         if verbose:
             if len(self.trainset) > 0 and self.args.eval_train:
                 self.logger.log(
@@ -198,6 +204,8 @@ class FedAvgClient:
 
     def fit(self):
         self.model.train()
+        # average_log_probs = []
+        # average_loss = []
         for _ in range(self.local_epoch):
             for batch_num, (x, y) in enumerate(self.trainloader):
                 # When the current batch size is 1, the batchNorm2d modules in the model would raise error.
@@ -209,16 +217,20 @@ class FedAvgClient:
                 if isinstance(self.criterion, BayesianLoss) or isinstance(self.criterion, LogMarginalLoss):
                     y_pred, log_prob, embeddings = self.model.train_forward(x, labels=y)
                     loss = self.criterion(y_pred, y, log_prob, embeddings)
-                    
+                    # average_log_probs.append(log_prob.cpu().detach().mean().item())
+                    # average_loss.append(loss.cpu().detach().item())
                 else:
                     logit = self.model(x)
                     loss = self.criterion(logit, y)
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
-
                 if batch_num > 10 and self.is_federated_stage:
                     break
+            # print("**")
+            # print(np.mean(average_log_probs))
+            # print(np.mean(average_loss))
+            # print("--")
 
     @torch.no_grad()
     def evaluate(self, model: torch.nn.Module = None) -> Dict[str, Dict[str, float]]:

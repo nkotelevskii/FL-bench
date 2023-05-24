@@ -53,29 +53,31 @@ def get_fedavg_argparser() -> ArgumentParser:
             "cinic10",
             "toy_circle",
             "toy_noisy",
+            "noisy_mnist",
+            "noisy_cifar100",
         ],
-        default="mnist",
+        default="fmnist",
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--loss_name", type=str, choices=["bayessian", "marginal_ll", "ce"], default="bayessian")
-    parser.add_argument("--loss_entropy_weight", type=float, default=0.01) # 0.5
+    parser.add_argument("--loss_entropy_weight", type=float, default=0.0) # 0.5
     parser.add_argument("--loss_log_prob_weight", type=float, default=0.0001) # 1.0
-    parser.add_argument("--loss_embeddings_weight", type=float, default=1.0) # 1.0
+    parser.add_argument("--loss_embeddings_weight", type=float, default=0.0) # 1.0
     parser.add_argument("--stop_grad_logp", type=str2bool, default=True)
-    parser.add_argument("--stop_grad_embeddings", type=str2bool, default=True)
+    parser.add_argument("--stop_grad_embeddings", type=str2bool, default=False)
     parser.add_argument("--finetune_in_the_end", type=int, default=0) # 50
-    parser.add_argument("--save_prefix", type=str, default='centralized') # 50
+    parser.add_argument("--save_prefix", type=str) # 50
 
     parser.add_argument("-jr", "--join_ratio", type=float, default=1.0) # default 0.1 (participation rate)
-    parser.add_argument("-ge", "--global_epoch", type=int, default=1) # default 100
-    parser.add_argument("-le", "--local_epoch", type=int, default=100) # default 5
+    parser.add_argument("-ge", "--global_epoch", type=int, default=50) # default 100
+    parser.add_argument("-le", "--local_epoch", type=int, default=1) # default 5
     parser.add_argument("-fe", "--finetune_epoch", type=int, default=0)
     parser.add_argument("-tg", "--test_gap", type=int, default=100)
     parser.add_argument("-ee", "--eval_test", type=int, default=1)
     parser.add_argument("-er", "--eval_train", type=int, default=0)
-    parser.add_argument("-lr", "--local_lr", type=float, default=1e-3) # default 1e-2
-    parser.add_argument("-mom", "--momentum", type=float, default=0.0)
-    parser.add_argument("-wd", "--weight_decay", type=float, default=0.0)
+    parser.add_argument("-lr", "--local_lr", type=float, default=0.1) # default 1e-2
+    parser.add_argument("-mom", "--momentum", type=float, default=0.9) ## 0
+    parser.add_argument("-wd", "--weight_decay", type=float, default=0.0) ## 0
     parser.add_argument("-vg", "--verbose_gap", type=int, default=100000)
     parser.add_argument("-bs", "--batch_size", type=int, default=32)
     parser.add_argument("--server_cuda", type=int, default=1)
