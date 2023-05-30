@@ -76,7 +76,7 @@ def get_fedavg_argparser() -> ArgumentParser:
     parser.add_argument("-ee", "--eval_test", type=int, default=1)
     parser.add_argument("-er", "--eval_train", type=int, default=0)
     parser.add_argument("-lr", "--local_lr", type=float, default=0.1) # default 1e-2
-    parser.add_argument("-mom", "--momentum", type=float, default=0.9) ## 0
+    parser.add_argument("-mom", "--momentum", type=float, default=0.0) ## 0
     parser.add_argument("-wd", "--weight_decay", type=float, default=0.0) ## 0
     parser.add_argument("-vg", "--verbose_gap", type=int, default=100000)
     parser.add_argument("-bs", "--batch_size", type=int, default=32)

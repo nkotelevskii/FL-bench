@@ -270,7 +270,6 @@ class FedAvgServer:
         weights = torch.tensor(
             weight_cache, device=self.device) / sum(weight_cache)
         delta_list = [list(delta.values()) for delta in delta_cache]
-        # delta_list = [list([3 * v if k.startswith('flow') else v for (k, v) in delta.items()]) for delta in delta_cache]
         aggregated_delta = [
             torch.sum(weights * torch.stack(diff, dim=-1), dim=-1)
             for diff in zip(*delta_list)

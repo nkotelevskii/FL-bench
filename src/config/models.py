@@ -401,7 +401,7 @@ class NatPnModel(DecoupledModel):
                     embeddings_for_label = local_embeddings[label_indices]
                     # Apply the corresponding flow
                     log_prob = process_flow_batch(local_flow=self.flow[i],
-                                                  batch_embeddings=embeddings_for_label)
+                                                  batch_embeddings=embeddings_for_label.detach())
                     # Assign the transformed values to the output tensor
                     log_probs[label_indices] = log_prob
 

@@ -91,7 +91,7 @@ class FedAvgClient:
         if name == "Adam":
             self.optimizer = getattr(torch.optim, name)(
                 trainable_params(self.model),
-                0.001,
+                self.local_lr,
             )
         else:
             self.optimizer = getattr(torch.optim, name)(
@@ -225,8 +225,8 @@ class FedAvgClient:
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
-                if batch_num > 10 and self.is_federated_stage:
-                    break
+                # if batch_num > 10 and self.is_federated_stage:
+                #     break
             # print("**")
             # print(np.mean(average_log_probs))
             # print(np.mean(average_loss))
